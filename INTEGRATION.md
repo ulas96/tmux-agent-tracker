@@ -70,6 +70,11 @@ ls ~/.claude/sessions   # at least one <pid>.json while Claude Code is running
 
 Developed and tested against tmux 3.5a with Lua 5.5 and LuaJIT.
 
+3.0 is a real floor, not a guess: the per-pane options the badges are written to
+arrived there. One thing wants newer — the picker (`M-a l`) is coloured with
+`display-menu` flags that only exist from 3.4, so below that it opens in tmux's
+own colours instead. Nothing else changes.
+
 If `lua` is missing:
 
 | | |
@@ -115,6 +120,10 @@ run-shell ~/.tmux/plugins/tmux-agent-tracker/agent-tracker.tmux
 Again, after your theme.
 
 ### Check it
+
+Paths from here on say `~/.tmux/plugins/`, which is where TPM puts things. If
+your `tmux.conf` lives under `~/.config/tmux/`, TPM follows it there and the
+same paths read `~/.config/tmux/plugins/` — substitute throughout.
 
 ```sh
 ls -l ~/.tmux/plugins/tmux-agent-tracker/agent-tracker.tmux
@@ -346,15 +355,19 @@ Every option is `@agent-tracker-*` and must be set **before** the plugin loads.
 |---|---|---|
 | `icon` | `✳` | the mark on pane badges |
 | `symbol-waiting` | `ᵠ` | |
-| `symbol-complete` | `ᶜ` | |
+| `symbol-complete` | `ᶜ` | finished, and you have been to look |
+| `symbol-unchecked` | `ᶜ` | finished, and you have not |
 | `symbol-busy` | *(empty)* | empty means animate the spinner |
-| `symbol-unknown` | `·` | |
+| `symbol-unknown` | `·` | a status the plugin does not recognise |
 | `spinner` | `⠒,⠢,⠤,⠔` | comma separated frames; these four are centred in the cell |
 | `color-waiting` | `#f9e2af` | |
 | `color-complete` | `#a6e3a1` | |
+| `color-unchecked` | `#fab387` | the orange that says "unread" |
 | `color-busy` | `#89b4fa` | |
 | `color-unknown` | `#6c7086` | |
 | `color-selected` | `#f5c2e7` | |
+| `module-style` | *(empty)* | set it to draw each agent as a pill; see [Matching your theme](#matching-your-theme) |
+| `separators` | *(empty)* | the caps on either end of a pill, as a comma pair |
 
 Defaults are Catppuccin Mocha, so it drops into a Catppuccin setup with no colour
 work. If your font renders the superscripts as boxes, plain letters work fine:
@@ -399,6 +412,7 @@ one of them wants something gets old fast.
 | Option | Default | |
 |---|---|---|
 | `keys` | `on` | all bindings, including the agent table |
+| `follow` | `on` | tmux's own pane moves change the selection too |
 | `pane-border` | `on` | badges on pane borders; `off` also drops the pane title |
 | `bar` | `on` | the dedicated status line |
 | `bottom-bar` | `off` | last row of the window instead |

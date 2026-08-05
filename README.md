@@ -1,7 +1,14 @@
 # tmux-agent-tracker
 
+[![tests](https://github.com/ulas96/tmux-agent-tracker/actions/workflows/tests.yml/badge.svg)](https://github.com/ulas96/tmux-agent-tracker/actions/workflows/tests.yml)
+[![MIT licence](https://img.shields.io/github/license/ulas96/tmux-agent-tracker)](LICENSE)
+
 Keep an eye on every Claude Code session you have running, without going to look
 for them.
+
+<!-- Record a demo, drop it at docs/demo.gif, and uncomment:
+![tmux-agent-tracker](docs/demo.gif)
+-->
 
 The agents get a status line of their own: each one's task name, with what it
 wants hanging off the top right corner.
@@ -130,6 +137,11 @@ run-shell ~/path/to/tmux-agent-tracker/agent-tracker.tmux
 ```
 
 Needs `tmux` 3.0+ and `lua` 5.1+ (LuaJIT is fine). On macOS: `brew install lua`.
+The one thing that wants newer is the picker's colours — `display-menu` only
+learnt to take them in tmux 3.4, so below that `M-a l` opens in tmux's own.
+
+TPM installs to `~/.tmux/plugins/`, or `~/.config/tmux/plugins/` if that is where
+your `tmux.conf` lives. Paths below use the second; substitute if yours differ.
 
 [INTEGRATION.md](INTEGRATION.md) is the step by step version, with a check after
 each one and a troubleshooting section keyed to them.
@@ -197,6 +209,7 @@ set -g @agent-tracker-symbol-waiting 'ᵠ'
 set -g @agent-tracker-symbol-complete 'ᶜ'
 set -g @agent-tracker-symbol-unchecked 'ᶜ'    # finished, and you have not been
 set -g @agent-tracker-symbol-busy ''          # empty means animate a spinner
+set -g @agent-tracker-symbol-unknown '·'      # a status we do not recognise
 set -g @agent-tracker-spinner '⠒,⠢,⠤,⠔'        # frames, centred in the cell
 
 set -g @agent-tracker-color-waiting '#f9e2af'
@@ -318,7 +331,8 @@ lua tests/run.lua
 
 No framework, just asserts. They cover the JSON decoding, the process-tree walk,
 roster ordering, badge rendering and the navigation arithmetic, and they run
-under 5.1 through 5.5.
+under 5.1 through 5.5. CI checks 5.1 through 5.4 and LuaJIT on Ubuntu; 5.5 is
+checked locally until it reaches the stable runner image.
 
 ## Licence
 

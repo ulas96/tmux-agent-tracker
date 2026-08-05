@@ -1,0 +1,24 @@
+name: tests
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Lua interpreters
+        run: sudo apt-get update && sudo apt-get install -y lua5.1 lua5.2 lua5.3 lua5.4 luajit
+      - name: Check entry points
+        run: |
+          bash -n agent-tracker.tmux
+          sh -n bin/tmux-agent-tracker
+      - name: Test every supported interpreter available on Ubuntu
+        run: |
+          for lua in lua5.1 lua5.2 lua5.3 lua5.4 luajit; do
+            echo "== $lua"
+            "$lua" tests/run.lua
+          done

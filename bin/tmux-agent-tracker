@@ -7,7 +7,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 lua=${AGENT_TRACKER_LUA:-}
 if [ -z "$lua" ]; then
-  for candidate in lua lua5.4 lua5.3 lua5.2 lua5.1 luajit; do
+  for candidate in lua lua5.5 lua5.4 lua5.3 lua5.2 lua5.1 luajit; do
     if command -v "$candidate" >/dev/null 2>&1; then
       lua=$candidate
       break
