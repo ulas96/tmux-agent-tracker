@@ -475,6 +475,27 @@ do
   tmux.set_global = set
 end
 
+-- The picker's colours travel on display-menu flags that only exist from tmux
+-- 3.4. Older tmux rejects the command outright rather than ignoring them, so
+-- every flag has to be dropped together — and an unrecognisable version has to
+-- keep them, or a menu nobody could have coloured would be the safe default.
+do
+  check("nav: 3.4 takes the style flags", nav.styles_supported("tmux 3.4"))
+  check("nav: 3.5a takes them", nav.styles_supported("tmux 3.5a"))
+  check("nav: 4.0 takes them", nav.styles_supported("tmux 4.0"))
+  check("nav: 3.3a does not", not nav.styles_supported("tmux 3.3a"))
+  check("nav: 3.0 does not", not nav.styles_supported("tmux 3.0"))
+  check("nav: 2.9 does not", not nav.styles_supported("tmux 2.9"))
+  check("nav: an unreadable version is assumed new", nav.styles_supported("tmux next"))
+  check("nav: no version at all is assumed new", nav.styles_supported(nil))
+
+  equals("nav: styled menu passes all three flags", #nav.menu_styles(PILL, "tmux 3.5a"), 3)
+  equals("nav: old tmux gets none of them", #nav.menu_styles(PILL, "tmux 3.3a"), 0)
+  -- Still nothing to pass when there is nothing to style, new tmux or not.
+  equals("nav: plain options style nothing but the selection",
+    #nav.menu_styles(OPTS, "tmux 3.5a"), 2)
+end
+
 -- --- the bottom bar's placeholder panes -------------------------------------
 
 do

@@ -112,13 +112,27 @@ function M.script()
   return root and (root .. "/bin/tmux-agent-tracker") or "tmux-agent-tracker"
 end
 
+-- display-menu grew -s/-S/-H, and the menu-style options they override, in tmux
+-- 3.4. Below that they are not "ignored" — the whole command fails on the
+-- unknown flag and the picker never opens, which is worse than a stock-coloured
+-- one. An unreadable version is treated as new enough: a menu in the wrong
+-- colours beats no menu on a build we cannot identify.
+function M.styles_supported(version)
+  local major, minor = tostring(version or ""):match("(%d+)%.(%d+)")
+  if not major then return true end
+  major, minor = tonumber(major), tonumber(minor)
+  return major > 3 or (major == 3 and minor >= 4)
+end
+
 -- tmux has no menu-style option to inherit from — the picker is stock colours
 -- unless display-menu is told otherwise — so the theming has to travel on the
 -- command. Each flag is passed only when there is a value behind it, leaving
 -- tmux's own defaults in place for anyone who has set nothing.
-function M.menu_styles(opts)
+function M.menu_styles(opts, version)
   local flags = {}
   local colors = opts.colors or {}
+
+  if not M.styles_supported(version) then return flags end
 
   if (opts.module_style or "") ~= "" then
     flags[#flags + 1] = "-s " .. tmux.quote(opts.module_style)
@@ -135,14 +149,14 @@ function M.menu_styles(opts)
   return flags
 end
 
-function M.menu(agents, opts)
+function M.menu(agents, opts, version)
   if #agents == 0 then
     tmux.tmux("display-message " .. tmux.quote("no claude agents running"))
     return
   end
 
   local parts = { "display-menu -T " .. tmux.quote(" agents ") .. " -x C -y C" }
-  for _, flag in ipairs(M.menu_styles(opts)) do
+  for _, flag in ipairs(M.menu_styles(opts, version)) do
     parts[#parts + 1] = flag
   end
   for _, agent in ipairs(agents) do

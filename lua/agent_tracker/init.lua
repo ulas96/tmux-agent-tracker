@@ -226,7 +226,11 @@ end
 
 function commands.menu()
   local list, opts = load()
-  nav.menu(list, opts)
+  -- `tmux -V` rather than the #{version} format: this exists to decide what an
+  -- old tmux will accept, so it has to be something every old tmux answers. One
+  -- extra fork on a keypress, against once a second on the poll — which is why
+  -- this is asked here and not carried along in agents.gather().
+  nav.menu(list, opts, tmux.query("-V"))
 end
 
 function commands.refresh()
