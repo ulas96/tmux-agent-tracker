@@ -26,31 +26,57 @@ see which agent is which. Then jump straight to whichever one needs you —
 └─ ✳²ᶜ luima ──────────┴─ ✳³ erp ─────────────┘
 ```
 
-with the two status lines together at whichever end you keep yours:
+The two bars sit together at whichever end you keep your status line:
 
 ```
  session │ 1:erp 2:luima 3:kal │ 14:32          <- your theme, untouched
  five-salt-gradesᵠ  luima-securityᶜ  kal-b6ᶜ    <- the agent bar
 ```
 
+or with `@agent-tracker-bottom-bar 'on'`, at opposite ends with the panes
+between them:
+
+```
+ session │ 1:erp 2:luima 3:kal │ 14:32          <- your theme, at the top
+┌──────────────────────┬──────────────────────┐
+│ claude               │ claude               │
+└─ ✳¹ᵠ luima ──────────┴─ ✳²ᶜ erp ────────────┘
+ five-salt-gradesᵠ  luima-securityᶜ  kal-b6ᶜ    <- the agent bar, last row
+```
+
 Names shrink to fit: the bar sizes itself to the narrowest attached client, so
 the agent on the end never quietly falls off the edge.
 
-### One bar at the top and the other at the bottom
+By default your `status-position` is left alone and the agent bar goes directly
+next to your theme — the row under it at the top, or the last row at the bottom.
 
-tmux will not do it. `status-position` is a single value for the whole status
-block — it is not an array — so however many status lines you ask for (up to
-five), they all sit together at the top or all at the bottom.
+### Theme at the top, agents at the bottom
 
-Your `status-position` is left alone, and the agent bar goes directly under your
-theme: second row from the top if you keep the status line at the top, the very
-bottom row if you keep it at the bottom. Set `@agent-tracker-status-position` to
-`top` or `bottom` if you want the plugin to decide instead.
+```tmux
+set -g @agent-tracker-bottom-bar 'on'
+```
 
-Painting the true bottom of the screen while the status line is at the top needs
-a real pane down there, one per window, which `select-layout` will resize and
-`tmux-resurrect` will save. That is not worth a status bar, so this does not do
-it.
+Puts the panes *between* the two, which is worth explaining because tmux has no
+setting for it. `status-position` is a single value for the whole status block —
+not an array — so however many status lines you ask for, they all sit at the same
+end. A bar at the bottom while the theme is at the top cannot be a status line.
+
+What can live down there is a pane. With `pane-border-status bottom`, a pane one
+row high has *zero* rows of content and one row of border, drawn full width
+across the window's last row. So the border is the bar, and the pane behind it is
+an inert placeholder that draws nothing and costs a single row — the same as a
+status line would.
+
+It holds up in practice: tmux's own pane navigation skips a zero-height pane, so
+you cannot land in it, and a hook puts the placeholder back when a new window
+appears or `select-layout` throws it out of position. What you are trading away:
+
+- a placeholder pane per window, each holding an idle `sleep` loop
+- `tmux-resurrect` saves them like any other pane, so a restored session comes
+  back with stray one-row panes at the bottom. `tmux-agent-tracker teardown`
+  clears them out, and the hooks rebuild the real ones.
+
+Needs `@agent-tracker-pane-border` left on, since the border is what draws it.
 
 ## How it knows
 
@@ -100,7 +126,8 @@ what tmux has always done — window switching, `choose-tree`, zoom,
 
 | Key | Does |
 |---|---|
-| `prefix + A` | agent mode, see below |
+| `M-a` (opt/alt + a) | agent mode, no prefix needed — see below |
+| `prefix + A` | same thing, through the prefix |
 | `prefix + N` / `P` | next / previous agent, and follow it |
 | `prefix + W` | back to the selected agent |
 | `prefix + Z` | back to it, zoomed |
@@ -108,9 +135,13 @@ what tmux has always done — window switching, `choose-tree`, zoom,
 | `prefix + F` | next **finished** agent |
 | `prefix + Tab` | flip between the last two |
 
-`prefix + A` enters agent mode, where the bare number keys are free — the only
-way to get `1`–`9` without taking `select-window` off the prefix. The status bar
-shows `agent` while it is active.
+`M-a` enters agent mode, where the bare number keys are free — the only way to
+get `1`–`9` without taking `select-window` off the prefix. The status bar shows
+`agent` while it is active.
+
+On macOS, opt + a types `å` unless the terminal sends it as Meta: Terminal.app →
+Settings → Profiles → Keyboard → *Use Option as Meta key*; iTerm2 → Profiles →
+Keys → Left Option key → *Esc+*. Ghostty and Alacritty do it by default.
 
 | Key | Does | |
 |---|---|---|
@@ -156,6 +187,7 @@ set -g @agent-tracker-interval '1'            # seconds
 set -g @agent-tracker-keys 'on'
 set -g @agent-tracker-pane-border 'on'
 set -g @agent-tracker-bar 'on'                # the dedicated status line
+set -g @agent-tracker-bottom-bar 'off'        # or the window's last row instead
 set -g @agent-tracker-status-position 'off'   # 'off' keeps yours; or 'top'/'bottom'
 set -g @agent-tracker-alert 'off'             # message when an agent starts waiting
 set -g @agent-tracker-sessions-dir '~/.claude/sessions'

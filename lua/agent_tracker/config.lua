@@ -45,6 +45,10 @@ M.defaults = {
   ["keys"] = "on",
   ["pane-border"] = "on",
   ["bar"] = "on",
+  -- Put the bar on the window's last row instead of in the status line, so the
+  -- panes sit between your theme at the top and the agents at the bottom. Costs
+  -- a placeholder pane per window; see bottombar.lua.
+  ["bottom-bar"] = "off",
   -- Left alone by default. Both status lines share one position whatever we do,
   -- so there is nothing to gain by overriding what somebody already set.
   ["status-position"] = "off",

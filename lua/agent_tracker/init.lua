@@ -1,6 +1,7 @@
 -- Command dispatch. Everything tmux calls comes through here.
 
 local agents = require("agent_tracker.agents")
+local bottombar = require("agent_tracker.bottombar")
 local config = require("agent_tracker.config")
 local nav = require("agent_tracker.nav")
 local render = require("agent_tracker.render")
@@ -10,6 +11,7 @@ local M = {}
 
 local BADGE = "@agent_badge"
 local LABEL = "@agent_label"
+local BAR_TEXT = "@agent_bar_text"
 local TRACKED = "@agent-tracker-panes"
 local SEEN = "@agent-tracker-seen"
 
@@ -101,7 +103,17 @@ local function poll(draw)
   paint_panes(list, opts, frame)
   announce(list, opts)
 
-  io.write(draw(list, opts, frame, nav.selected_pane(), agents.client_width(raw)))
+  local text = draw(list, opts, frame, nav.selected_pane(), agents.client_width(raw))
+
+  -- With the bar down on a pane border, tmux reads it out of an option and
+  -- redraws it itself; the status line is only here to keep the poll ticking,
+  -- so it prints nothing.
+  if config.enabled("bottom-bar") then
+    tmux.set_global(BAR_TEXT, text)
+    return
+  end
+
+  io.write(text)
 end
 
 -- The dedicated agent bar: task names with their status, no icons, no indices.
@@ -190,6 +202,18 @@ function commands.refresh()
   refresh_status()
 end
 
+-- Put a bar pane on every window that is missing one, or has had one shoved out
+-- of place by a layout change. Safe to call repeatedly; the layout hook does.
+function commands.ensure()
+  config.load()
+  if not config.enabled("bottom-bar") then return end
+  if bottombar.ensure() > 0 then refresh_status() end
+end
+
+function commands.teardown()
+  bottombar.teardown()
+end
+
 -- Prints what the plugin can see. First stop when the status bar is empty.
 function commands.doctor()
   local dir = config.sessions_dir()
@@ -221,7 +245,7 @@ function M.run(argv)
   local handler = commands[name] or commands[name .. "_"]
   if not handler then
     io.stderr:write("tmux-agent-tracker: unknown command '" .. name .. "'\n")
-    io.stderr:write("commands: status roster list goto next prev focus zoom waiting complete last menu refresh doctor\n")
+    io.stderr:write("commands: status roster list goto next prev focus zoom waiting complete last menu refresh ensure teardown doctor\n")
     return 1
   end
   handler(argv[2])

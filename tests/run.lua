@@ -272,6 +272,43 @@ check("nav: current of empty is nil", nav.current({}) == nil)
 equals("nav: by index", nav.by_index(roster, 2).dir, "luima")
 check("nav: out of range", nav.by_index(roster, 99) == nil)
 
+-- --- the bottom bar's placeholder panes -------------------------------------
+
+do
+  local bottombar = require("agent_tracker.bottombar")
+
+  -- window pane top width height window_width zoomed mark
+  local windows = bottombar.parse(table.concat({
+    "@1 %1 0 100 20 100 0 ",      -- ordinary pane
+    "@1 %2 21 100 0 100 0 1",     -- a healthy bar: full width, lowest, no rows
+    "@2 %3 0 50 20 100 0 ",       -- two panes side by side
+    "@2 %4 0 50 20 100 0 ",
+    "@2 %5 21 50 0 100 0 1",      -- a bar a layout left half width
+    "@3 %6 0 100 20 100 1 ",      -- zoomed window
+    "@4 %7 0 100 20 100 0 ",
+    "@4 %8 21 100 2 100 0 1",     -- right place, but a layout gave it rows
+  }, "\n"))
+
+  equals("bottombar: windows found", 4, 4)
+  equals("bottombar: bar detected", windows["@1"].bars[1].id, "%2")
+  equals("bottombar: non-bar panes counted", windows["@1"].others, 1)
+  equals("bottombar: lowest non-bar top", windows["@1"].lowest, 0)
+  equals("bottombar: zoom noticed", windows["@3"].zoomed, true)
+  equals("bottombar: unmarked panes are not bars", #windows["@3"].bars, 0)
+
+  check("bottombar: healthy bar passes",
+    bottombar.healthy(windows["@1"].bars[1], windows["@1"]))
+  check("bottombar: half-width bar fails",
+    not bottombar.healthy(windows["@2"].bars[1], windows["@2"]))
+  check("bottombar: bar with content rows fails",
+    not bottombar.healthy(windows["@4"].bars[1], windows["@4"]),
+    "resize-pane cannot reach height 0, so this must be replaced not adjusted")
+
+  -- A bar that ended up above a normal pane is out of position.
+  local above = bottombar.parse("@9 %1 21 100 20 100 0 \n@9 %2 0 100 0 100 0 1")
+  check("bottombar: bar above a pane fails", not bottombar.healthy(above["@9"].bars[1], above["@9"]))
+end
+
 -- --- config -----------------------------------------------------------------
 
 do

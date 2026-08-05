@@ -46,7 +46,20 @@ fi
 # Both lines share one position. tmux has a single status-position for the whole
 # block ("not an array"), so one line at the top and another at the bottom is not
 # something it can do, however many lines you ask for.
-if enabled bar on; then
+#
+# Unless bottom-bar is on, in which case the bar lives on the last row of the
+# window instead and the status line only has to keep the poll ticking.
+if enabled bottom-bar off; then
+  # An invisible #() on the theme's own line: the poll has to be driven by
+  # something tmux refreshes, and this is the only thing left once the bar has
+  # moved off the status line. It prints nothing.
+  #
+  # Unset before appending, or every reload of tmux.conf leaves another copy
+  # behind and the poll runs once more per second than it did before.
+  tmux set-option -gu 'status-format[0]'
+  tmux set-option -gqa 'status-format[0]' "#($tracker status)"
+  tmux set-option -g status on
+elif enabled bar on; then
   tmux set-option -g status 2
   # Line 0 is left exactly as the theme built it.
   tmux set-option -gq status-format[1] \
@@ -59,8 +72,29 @@ fi
 # format string spawns nothing of its own no matter how many panes are open.
 if enabled pane-border on; then
   tmux set-option -g pane-border-status bottom
-  tmux set-option -g pane-border-format \
-    '#{?@agent_badge,#{@agent_badge} #[fg=default]#{@agent_label},#{?pane_active,#[reverse],}#{pane_index}#[default] #{pane_title}}'
+
+  # A bar pane's border is the agent bar; everything else gets its badge. The
+  # bar text comes from a global option, which resolves in a pane-scoped format
+  # just as a per-pane one does, so all the windows share a single value.
+  normal='#{?@agent_badge,#{@agent_badge} #[fg=default]#{@agent_label},#{?pane_active,#[reverse],}#{pane_index}#[default] #{pane_title}}'
+  if enabled bottom-bar off; then
+    tmux set-option -g pane-border-format "#{?@agent_bar,#{@agent_bar_text},$normal}"
+  else
+    tmux set-option -g pane-border-format "$normal"
+  fi
+fi
+
+# --- the bottom bar's placeholder panes --------------------------------------
+
+if enabled bottom-bar off; then
+  # A layout change re-places the bar pane rather than resizing it, and a new
+  # window has none at all, so both have to put it back. ensure only acts on a
+  # window that is actually wrong, which is what stops these hooks — which its
+  # own splitting and killing fire — from chasing their own tail.
+  tmux set-hook -g after-new-window "run-shell -b '$tracker ensure'"
+  tmux set-hook -g window-layout-changed "run-shell -b '$tracker ensure'"
+  tmux set-hook -g after-kill-pane "run-shell -b '$tracker ensure'"
+  tmux run-shell -b "$tracker ensure"
 fi
 
 # --- keys -------------------------------------------------------------------
@@ -74,7 +108,8 @@ if enabled keys on; then
   # stock tmux — select-window, next-window, choose-tree, zoom — and taking
   # them would cost more than it gains. C is left alone too (customize-mode),
   # so "next finished agent" is F.
-  tmux bind-key A $stay                            # enter agent mode
+  tmux bind-key -n M-a $stay                       # enter agent mode, no prefix
+  tmux bind-key A $stay                            # ...or via the prefix
   tmux bind-key N $run "$tracker next"             # next agent, and follow
   tmux bind-key P $run "$tracker prev"             # previous agent, and follow
   tmux bind-key W $run "$tracker focus"            # back to the selected agent
