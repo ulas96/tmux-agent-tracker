@@ -38,12 +38,28 @@ function M.parse(out)
     if window then
       local w = windows[window]
       if not w then
-        w = { id = window, width = tonumber(window_width), zoomed = zoomed == "1", bars = {}, lowest = -1 }
+        w = {
+          id = window,
+          width = tonumber(window_width),
+          zoomed = zoomed == "1",
+          bars = {},
+          orphans = {},
+          lowest = -1,
+        }
         windows[window] = w
       end
+      local shape = { id = pane, top = tonumber(top), width = tonumber(width), height = tonumber(height) }
       if trim(mark) == "1" then
-        w.bars[#w.bars + 1] =
-          { id = pane, top = tonumber(top), width = tonumber(width), height = tonumber(height) }
+        w.bars[#w.bars + 1] = shape
+      elseif shape.height == 0 and shape.width == w.width then
+        -- Unmarked, but shaped exactly like one of ours. tmux-resurrect saves
+        -- panes and not pane options, so after a restore our placeholders come
+        -- back looking right and answering to nothing. Adopting them beats
+        -- leaving a stray behind and building a second one on top of it.
+        --
+        -- Nothing a person would use looks like this: zero content rows means
+        -- there is no room to have put anything there.
+        w.orphans[#w.orphans + 1] = shape
       else
         w.others = (w.others or 0) + 1
         if tonumber(top) > w.lowest then w.lowest = tonumber(top) end
@@ -103,7 +119,29 @@ local function release()
   os.execute("rmdir " .. tmux.quote(lock_path()) .. " 2>/dev/null")
 end
 
+-- Worth doing anything about? Windows we would never touch don't count, so a
+-- server that is already correct answers no and the poll pays for one listing
+-- and nothing else.
+function M.wanting(windows)
+  for _, window in pairs(windows) do
+    if (window.others or 0) > 0 and not window.zoomed then
+      if #window.bars ~= 1 or not M.healthy(window.bars[1], window) then
+        return true
+      end
+      -- One good bar, but something else down there shaped like one: a restore
+      -- left a stray behind, and left alone it would sit there for the life of
+      -- the server taking up the row it stole.
+      if #window.orphans > 0 then return true end
+    end
+  end
+  return false
+end
+
 function M.ensure()
+  -- Looked at before locking, because this runs once a second and the answer is
+  -- almost always no. Taking the lock first would mean two extra processes per
+  -- tick to find that out.
+  if not M.wanting(M.survey()) then return 0 end
   if not acquire() then return 0 end
 
   local ok, changed = pcall(M.reconcile)
@@ -136,6 +174,20 @@ function M.reconcile()
         end
       end
 
+      -- Anything left over from a restore. The first one that is in the right
+      -- place stands in for a bar we would otherwise have to build; the rest
+      -- are stealing a row each and go.
+      for _, orphan in ipairs(window.orphans) do
+        if not keep and M.healthy(orphan, window) then
+          tmux.tmux("set-option -pq -t " .. orphan.id .. " " .. M.MARK .. " 1")
+          keep = orphan
+          changed = changed + 1
+        else
+          tmux.tmux("kill-pane -t " .. orphan.id)
+          changed = changed + 1
+        end
+      end
+
       if not keep then
         if M.create(window.id) then changed = changed + 1 end
       end
@@ -146,10 +198,14 @@ function M.reconcile()
 end
 
 -- Take the bar panes away again, for turning the option off without restarting.
+-- Orphans go too, or a restore would leave rows nobody owns.
 function M.teardown()
   for _, window in pairs(M.survey()) do
     for _, bar in ipairs(window.bars) do
       tmux.tmux("kill-pane -t " .. bar.id)
+    end
+    for _, orphan in ipairs(window.orphans) do
+      tmux.tmux("kill-pane -t " .. orphan.id)
     end
   end
 end
