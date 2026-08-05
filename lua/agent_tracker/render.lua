@@ -41,6 +41,9 @@ function M.options()
     spinner = config.list("spinner"),
     label = config.get("label"),
     label_width = config.number("label-width"),
+    bar_label = config.get("bar-label"),
+    bar_width = config.number("bar-width"),
+    bar_separator = config.get("bar-separator"),
     max = config.number("max"),
   }
 end
@@ -120,7 +123,7 @@ function M.pane_badge(agent, opts, frame)
     .. "#[default]"
 end
 
--- The roster that goes in the status bar.
+-- The roster of badges, for anyone placing it inside an existing status line.
 function M.roster(agents, opts, frame, selected_pane)
   local parts = {}
   for _, agent in ipairs(agents) do
@@ -128,6 +131,64 @@ function M.roster(agents, opts, frame, selected_pane)
     parts[#parts + 1] = M.styled_badge(agent, opts, frame, agent.pane == selected_pane)
   end
   return table.concat(parts, " ")
+end
+
+function M.bar_name(agent, opts)
+  local text
+  if opts.bar_label == "dir" then
+    text = agent.dir
+  elseif opts.bar_label == "both" then
+    text = agent.dir .. "/" .. agent.name
+  else
+    text = agent.name
+  end
+  return M.truncate(text or "", opts.bar_width)
+end
+
+-- One entry on the dedicated agent bar: the task name with its status hanging
+-- off the top right, and no icon or index in front of it. Position in the bar
+-- is the index, and the pane's own border badge carries the number.
+function M.bar_entry(agent, opts, frame, selected)
+  local symbol, key = M.symbol(agent, opts, frame)
+  local color = opts.colors[key] or opts.colors.unknown
+  return style(color, selected and ",reverse,bold" or "")
+    .. M.bar_name(agent, opts)
+    .. symbol
+    .. "#[default]"
+end
+
+local MIN_NAME = 4
+local RESERVE = 12  -- leading pad and the agent-mode indicator on the right
+
+-- bar-width is a ceiling, not a fixed size. Past a certain number of agents the
+-- names have to give way or the ones on the end drop off the edge of the screen
+-- without a word, which is the one thing a status bar must not do.
+function M.fit(count, opts, avail)
+  if not avail or count == 0 then return opts.bar_width end
+  local separators = (count - 1) * #(opts.bar_separator or "  ")
+  local symbols = count                      -- one status glyph each
+  local budget = avail - RESERVE - separators - symbols
+  local each = math.floor(budget / count)
+  if each < MIN_NAME then each = MIN_NAME end
+  if each > opts.bar_width then each = opts.bar_width end
+  return each
+end
+
+function M.bar(agents, opts, frame, selected_pane, avail)
+  local shown = {}
+  for _, agent in ipairs(agents) do
+    if opts.max > 0 and agent.index > opts.max then break end
+    shown[#shown + 1] = agent
+  end
+
+  local width = M.fit(#shown, opts, avail)
+  local sized = setmetatable({ bar_width = width }, { __index = opts })
+
+  local parts = {}
+  for _, agent in ipairs(shown) do
+    parts[#parts + 1] = M.bar_entry(agent, sized, frame, agent.pane == selected_pane)
+  end
+  return table.concat(parts, opts.bar_separator or "  ")
 end
 
 -- Human-readable one-liner, used by the picker menu and `agents` on the CLI.

@@ -29,6 +29,13 @@ M.defaults = {
   ["label"] = "dir",
   ["label-width"] = "20",
 
+  -- the agent bar shows the task name itself, so it wants a tighter budget
+  -- bar-width is the most a name may take, not what it will take: the bar
+  -- shrinks names to fit the narrowest attached client, so this can be generous.
+  ["bar-label"] = "name",
+  ["bar-width"] = "18",
+  ["bar-separator"] = "  ",
+
   -- behaviour
   ["max"] = "9",
   ["interval"] = "1",
@@ -37,7 +44,7 @@ M.defaults = {
   -- wiring, all opt-out
   ["keys"] = "on",
   ["pane-border"] = "on",
-  ["status-append"] = "on",
+  ["bar"] = "on",
   ["status-position"] = "bottom",
   ["alert"] = "off",
 }

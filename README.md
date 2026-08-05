@@ -3,8 +3,8 @@
 Keep an eye on every Claude Code session you have running, without going to look
 for them.
 
-Each Claude pane gets a small badge on its bottom border, and a numbered roster
-sits in the status bar. The badge says which agent it is and what it wants:
+The agents get a status line of their own: each one's task name, with what it
+wants hanging off the top right corner.
 
 ```
 ✳¹ᵠ   waiting on you        yellow
@@ -12,8 +12,9 @@ sits in the status bar. The badge says which agent it is and what it wants:
 ✳³    working               blue, with a spinner
 ```
 
-Then jump straight to whichever one needs you — `prefix + Q` goes to the next
-agent that is waiting, `prefix + A 3` goes to the third one.
+Every Claude pane also gets a numbered badge on its bottom border, so you can
+see which agent is which. Then jump straight to whichever one needs you —
+`prefix + Q` goes to the next agent that is waiting, `prefix + A 3` to the third.
 
 ```
 ┌──────────────────────┬──────────────────────┐
@@ -23,8 +24,22 @@ agent that is waiting, `prefix + A 3` goes to the third one.
 ┌──────────────────────┬──────────────────────┐
 │ claude               │ claude               │
 └─ ✳²ᶜ luima ──────────┴─ ✳³ erp ─────────────┘
- session │ ✳¹ᵠ ✳²ᶜ ✳³ │ 14:32
+ session │ 1:erp 2:luima 3:kal │ 14:32          <- your theme, untouched
+ five-salt-gradesᵠ  luima-securityᶜ  kal-b6ᶜ    <- the agent bar
 ```
+
+Names shrink to fit: the bar sizes itself to the narrowest attached client, so
+the agent on the end never quietly falls off the edge.
+
+### On putting one bar at the top and the other at the bottom
+
+tmux will not do it. `status-position` is a single value for the whole status
+block — it is not an array — so however many status lines you ask for (up to
+five), they all stack together at the top or all at the bottom. This plugin puts
+the agent bar on the outer edge of that block: with the default
+`status-position bottom` it is the very bottom line of the screen, with your
+theme directly above it. Set `@agent-tracker-status-position 'top'` to move the
+pair to the top instead, or `'off'` to leave the position alone.
 
 ## How it knows
 
@@ -54,8 +69,9 @@ set -g @plugin 'ulas96/tmux-agent-tracker'
 
 Then `prefix + I`.
 
-**Put it after your theme.** The roster is appended to `status-right`, and
-themes assign that wholesale — a theme loaded afterwards will overwrite it.
+**Put it after your theme.** The agent bar is a second status line, and themes
+set `status` and `status-position` wholesale — one loaded afterwards will undo
+it.
 
 Without TPM, clone it and source the entry point:
 
@@ -116,15 +132,20 @@ set -g @agent-tracker-color-complete '#a6e3a1'
 set -g @agent-tracker-color-busy '#89b4fa'
 set -g @agent-tracker-color-selected '#f5c2e7'
 
-set -g @agent-tracker-label 'dir'             # dir | name | both
+set -g @agent-tracker-label 'dir'             # pane border: dir | name | both
 set -g @agent-tracker-label-width '20'
-set -g @agent-tracker-max '9'                 # roster length; the menu shows all
+
+set -g @agent-tracker-bar-label 'name'        # agent bar: name | dir | both
+set -g @agent-tracker-bar-width '18'          # a ceiling; names shrink to fit
+set -g @agent-tracker-bar-separator '  '
+
+set -g @agent-tracker-max '9'                 # bar length; the menu shows all
 set -g @agent-tracker-interval '1'            # seconds
 
 set -g @agent-tracker-keys 'on'
 set -g @agent-tracker-pane-border 'on'
-set -g @agent-tracker-status-append 'on'
-set -g @agent-tracker-status-position 'bottom'  # or 'off' to leave yours alone
+set -g @agent-tracker-bar 'on'                # the dedicated status line
+set -g @agent-tracker-status-position 'bottom'  # or 'top', or 'off' to leave yours
 set -g @agent-tracker-alert 'off'             # message when an agent starts waiting
 set -g @agent-tracker-sessions-dir '~/.claude/sessions'
 ```
@@ -138,12 +159,17 @@ set -g @agent-tracker-symbol-complete 'c'
 
 ### Keeping your own status bar
 
-`@agent-tracker-status-append 'off'` stops it touching `status-right`, and you
-place the roster yourself:
+`@agent-tracker-bar 'off'` stops it adding a status line at all, and you place
+the output wherever you want it. `status` prints the names, `roster` prints the
+compact `✳¹ᵠ ✳²ᶜ` badges, which is the one that fits on a shared line:
 
 ```tmux
-set -g status-right "#(~/.config/tmux/plugins/tmux-agent-tracker/bin/tmux-agent-tracker status) %H:%M"
+set -g status-right "#(~/.config/tmux/plugins/tmux-agent-tracker/bin/tmux-agent-tracker roster) %H:%M"
 ```
+
+Whichever you use runs the same single poll, so pick one — running both doubles
+the work for no benefit. Raise `status-right-length` past its 40 column default
+or the badges get cut off.
 
 ## My setup
 
@@ -181,9 +207,8 @@ prints the Lua and tmux it found, where it is looking, and every agent it can
 see. If the list is empty, the usual reasons are that Claude Code is running
 outside tmux, or that `~/.claude/sessions` is somewhere else.
 
-The roster getting cut off the end of the bar is `status-right-length` — the
-plugin raises it to 200, but a theme loaded afterwards will have lowered it
-again. Load this plugin last.
+No second status line at all usually means a theme loaded after this plugin and
+set `status` back to `on`. Load this plugin last.
 
 ## Development
 

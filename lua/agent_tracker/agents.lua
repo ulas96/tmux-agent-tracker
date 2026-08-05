@@ -38,6 +38,8 @@ function M.gather(sessions_dir)
       .. tmux.quote("#{pane_pid} #{pane_id} #{window_index} #{pane_index} #{session_name}"),
     "printf '#options\\n'",
     "tmux show-options -g",
+    "printf '#clients\\n'",
+    "tmux list-clients -F '#{client_width}'",
     "printf '#procs\\n'",
     -- Session files are named <pid>.json, so the pid list comes from the
     -- filenames without anybody having to parse JSON first. Asking ps about
@@ -63,7 +65,7 @@ function M.full_ancestry()
 end
 
 local function split_sections(raw)
-  local sections = { panes = {}, options = {}, procs = {}, sessions = {} }
+  local sections = { panes = {}, options = {}, clients = {}, procs = {}, sessions = {} }
   local current
 
   for line in raw:gmatch("[^\n]+") do
@@ -81,6 +83,19 @@ end
 -- The @agent-tracker-* block out of the same read, for config to chew on.
 function M.options_text(raw)
   return table.concat(split_sections(raw).options, "\n")
+end
+
+-- tmux runs a status line's #() once and shows the result to every client, so
+-- the bar has to fit the narrowest one attached or it gets cut off there.
+function M.client_width(raw)
+  local narrowest
+  for _, line in ipairs(split_sections(raw).clients) do
+    local width = tonumber(line:match("^%s*(%d+)%s*$"))
+    if width and (not narrowest or width < narrowest) then
+      narrowest = width
+    end
+  end
+  return narrowest
 end
 
 -- session_name is last in the format string because it is the only field that

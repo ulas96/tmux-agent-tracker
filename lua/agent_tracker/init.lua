@@ -86,14 +86,32 @@ end
 
 local commands = {}
 
-function commands.status()
-  local list, opts = load()
+-- The poll that drives everything: repaint the pane badges, then print whatever
+-- the caller wants on the bar. Whichever of these tmux is running, it runs once
+-- per status-interval for the whole server.
+local function poll(draw)
+  local raw = agents.gather()
+  config.seed(agents.options_text(raw))
+  nav.use(config.raw("selected"), config.raw("previous"))
+
+  local list = agents.parse(raw, agents.full_ancestry)
+  local opts = render.options()
   local frame = render.frame()
 
   paint_panes(list, opts, frame)
   announce(list, opts)
 
-  io.write(render.roster(list, opts, frame, nav.selected_pane()))
+  io.write(draw(list, opts, frame, nav.selected_pane(), agents.client_width(raw)))
+end
+
+-- The dedicated agent bar: task names with their status, no icons, no indices.
+function commands.status()
+  poll(render.bar)
+end
+
+-- The compact badge form, for placing inside an existing status line by hand.
+function commands.roster()
+  poll(render.roster)
 end
 
 function commands.list()
@@ -203,7 +221,7 @@ function M.run(argv)
   local handler = commands[name] or commands[name .. "_"]
   if not handler then
     io.stderr:write("tmux-agent-tracker: unknown command '" .. name .. "'\n")
-    io.stderr:write("commands: status list goto next prev focus zoom waiting complete last menu refresh doctor\n")
+    io.stderr:write("commands: status roster list goto next prev focus zoom waiting complete last menu refresh doctor\n")
     return 1
   end
   handler(argv[2])

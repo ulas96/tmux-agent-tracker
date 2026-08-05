@@ -203,6 +203,39 @@ do
   equals("render: roster respects max", count, 3)
 end
 
+-- --- the agent bar ----------------------------------------------------------
+
+do
+  local opts = {}
+  for key, value in pairs(OPTS) do opts[key] = value end
+  opts.bar_label, opts.bar_width, opts.bar_separator = "name", 12, "  "
+
+  equals("bar: name then status, no icon or index",
+    render.bar_entry(roster[3], opts, 0, false),
+    "#[fg=yellow]zk auth" .. "ᵠ" .. "#[default]")
+
+  equals("bar: long names are shortened",
+    render.bar_name({ name = "luima-security-remediation", dir = "x" }, opts),
+    "luima-secur…")
+
+  equals("bar: dir label", render.bar_name(roster[1], { bar_label = "dir", bar_width = 20 }), "erp")
+
+  check("bar: selected is reversed",
+    render.bar(roster, opts, 0, "%19"):find("reverse") ~= nil)
+  check("bar: separated", render.bar(roster, opts, 0, nil):find("  ") ~= nil)
+
+  -- Width is a ceiling that gives way as agents pile up.
+  equals("fit: plenty of room uses the ceiling", render.fit(3, opts, 300), 12)
+  equals("fit: no width known uses the ceiling", render.fit(3, opts, nil), 12)
+  check("fit: cramped shrinks", render.fit(9, opts, 100) < 12)
+  equals("fit: never below the floor", render.fit(40, opts, 80), 4)
+
+  -- The whole point: everything still fits on the line.
+  local narrow = render.bar(roster, opts, 0, nil, 40):gsub("#%[[^%]]*%]", "")
+  local count = select(2, narrow:gsub("[^\128-\191]", ""))
+  check("fit: output fits the client width", count <= 40, "rendered " .. count .. " columns")
+end
+
 -- --- navigation -------------------------------------------------------------
 
 -- nav reads the selection from tmux; stub that out so the maths is testable.

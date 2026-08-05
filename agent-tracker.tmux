@@ -36,16 +36,19 @@ if [ "$position" != "off" ]; then
   tmux set-option -g status-position "$position"
 fi
 
-# Appended, not assigned: this has to survive alongside whatever theme already
-# owns the status line. Load this plugin after your theme.
-if enabled status-append on; then
-  # The key-table indicator matters: agent mode is sticky, and you should never
-  # be left wondering why a keystroke went somewhere unexpected.
-  tmux set-option -ga status-right \
-    "#[fg=default,bg=default] #($tracker status)#{?#{==:#{client_key_table},agent}, #[reverse] agent #[noreverse],}"
-  # Themes commonly leave status-right-length at its 40 column default, which
-  # silently truncates the roster off the end of the bar.
-  tmux set-option -g status-right-length 200
+# The agents get a status line of their own rather than being squeezed onto the
+# end of the theme's. tmux stacks status lines: line 0 is the theme, line 1 is
+# ours, and it sits on the outer edge — the very bottom of the screen when
+# status-position is bottom.
+#
+# Both lines share one position. tmux has a single status-position for the whole
+# block ("not an array"), so one line at the top and another at the bottom is not
+# something it can do, however many lines you ask for.
+if enabled bar on; then
+  tmux set-option -g status 2
+  # Line 0 is left exactly as the theme built it.
+  tmux set-option -gq status-format[1] \
+    "#[align=left]#[fg=default,bg=default] #($tracker status)#[align=right]#{?#{==:#{client_key_table},agent},#[reverse] agent #[noreverse] ,}"
 fi
 
 # --- pane borders -----------------------------------------------------------
