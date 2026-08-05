@@ -44,7 +44,11 @@ function M.gather(sessions_dir)
     "printf '#options\\n'",
     "tmux show-options -g",
     "printf '#clients\\n'",
-    "tmux list-clients -F '#{client_width}'",
+    -- A client's format expansion falls through session → current window →
+    -- active pane, so #{pane_id} here is the pane that client is looking at.
+    -- That is what marks a finished agent as checked, and it rides along in the
+    -- read we were already doing for the width.
+    "tmux list-clients -F '#{client_width} #{pane_id}'",
     "printf '#procs\\n'",
     -- Session files are named <pid>.json, so the pid list comes from the
     -- filenames without anybody having to parse JSON first. Asking ps about
@@ -95,12 +99,23 @@ end
 function M.client_width(raw)
   local narrowest
   for _, line in ipairs(split_sections(raw).clients) do
-    local width = tonumber(line:match("^%s*(%d+)%s*$"))
+    local width = tonumber(line:match("^%s*(%d+)"))
     if width and (not narrowest or width < narrowest) then
       narrowest = width
     end
   end
   return narrowest
+end
+
+-- The panes the attached clients are actually sitting in, as a set. A detached
+-- session has no client, so nothing in it counts as looked at.
+function M.active_panes(raw)
+  local active = {}
+  for _, line in ipairs(split_sections(raw).clients) do
+    local pane = line:match("(%%%d+)%s*$")
+    if pane then active[pane] = true end
+  end
+  return active
 end
 
 -- The two space-bearing fields sit at the end, split by the tab. A line with no

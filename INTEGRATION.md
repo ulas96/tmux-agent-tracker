@@ -173,7 +173,8 @@ What you are taking on:
 - a placeholder pane per window, each holding an idle `sleep` loop
 - `tmux-resurrect` saves them like any other pane — see
   [Living with other plugins](#living-with-other-plugins)
-- it needs `@agent-tracker-pane-border` left on, since the border is what draws it
+- `pane-border-status` goes to `bottom` for every pane, since the border is what
+  draws it — `@agent-tracker-pane-border off` drops the badges but keeps the bar
 
 tmux's own pane navigation skips a zero-height pane, so you cannot land in one by
 accident, and a hook puts the placeholder back when a window is created or
@@ -348,7 +349,7 @@ Every option is `@agent-tracker-*` and must be set **before** the plugin loads.
 | `symbol-complete` | `ᶜ` | |
 | `symbol-busy` | *(empty)* | empty means animate the spinner |
 | `symbol-unknown` | `·` | |
-| `spinner` | `⠂,⠄,⠆,⠇,⠋,⠉,⠈,⠉` | comma separated frames |
+| `spinner` | `⠒,⠢,⠤,⠔` | comma separated frames; these four are centred in the cell |
 | `color-waiting` | `#f9e2af` | |
 | `color-complete` | `#a6e3a1` | |
 | `color-busy` | `#89b4fa` | |
@@ -398,7 +399,7 @@ one of them wants something gets old fast.
 | Option | Default | |
 |---|---|---|
 | `keys` | `on` | all bindings, including the agent table |
-| `pane-border` | `on` | badges on pane borders |
+| `pane-border` | `on` | badges on pane borders; `off` also drops the pane title |
 | `bar` | `on` | the dedicated status line |
 | `bottom-bar` | `off` | last row of the window instead |
 | `status-position` | `off` | `off` keeps yours; or `top` / `bottom` |
@@ -532,8 +533,8 @@ should fix it immediately and tells you the automatic path is not firing. It run
 from five hooks *and* from the poll, so a persistent failure usually means the
 poll is not running — back to [4.2](#42-is-the-poll-actually-running).
 
-Also check `@agent-tracker-pane-border` is still `on`; the border is what draws
-the bar, so turning it off takes the bar with it.
+Also check `pane-border-status` is still `bottom`; the border is what draws the
+bar, so a later `set -g pane-border-status off` takes the bar with it.
 
 ### bottom-bar: stray one-row panes after a restart
 

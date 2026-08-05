@@ -163,9 +163,9 @@ end
 
 local OPTS = {
   icon = "✳",
-  symbols = { waiting = "ᵠ", complete = "ᶜ", busy = "", unknown = "·" },
+  symbols = { waiting = "ᵠ", complete = "ᶜ", unchecked = "ᶜ", busy = "", unknown = "·" },
   colors = {
-    waiting = "yellow", complete = "green", busy = "blue",
+    waiting = "yellow", complete = "green", unchecked = "orange", busy = "blue",
     unknown = "grey", selected = "pink",
   },
   spinner = { "⠂", "⠄", "⠆" },
@@ -194,6 +194,65 @@ check("render: roster contains colour", render.roster(roster, OPTS, 0, nil):find
 check("render: selected is reversed", render.roster(roster, OPTS, 0, "%19"):find("reverse") ~= nil)
 check("render: unselected is not", render.roster(roster, OPTS, 0, nil):find("reverse") == nil)
 
+-- The same options dressed as a theme's modules. Word colours throughout so the
+-- assertions below stay readable.
+local PILL = setmetatable({
+  module_style = "fg=white,bg=grey",
+  separators = { "<", ">" },
+  ink = "black",
+  ground = "navy",
+}, { __index = OPTS })
+
+do
+  -- Nothing set: byte-identical to the plain coloured text the plugin has always
+  -- drawn. This is the guard on shipping the pills off by default.
+  equals("module: unset is plain text",
+    render.module("yellow", "ᵠ", "name", "nameᵠ", OPTS, false),
+    "#[fg=yellow]nameᵠ#[default]")
+  equals("module: unset selection still reverses",
+    render.module("yellow", "ᵠ", "name", "nameᵠ", OPTS, true),
+    "#[fg=yellow,reverse,bold]nameᵠ#[default]")
+
+  -- A style but no caps: flat pills, no particular font needed.
+  local flat = setmetatable({ separators = {} }, { __index = PILL })
+  equals("module: style without caps",
+    render.module("yellow", "ᵠ", "name", "nameᵠ", flat, false),
+    "#[fg=black,bg=yellow]ᵠ #[fg=white,bg=grey] name#[default]")
+
+  -- The full grammar. The glyph sits against the opening cap and the name
+  -- against the closing one, which is how the themes space theirs; the closing
+  -- cap takes the pill's own background so it reads as the end of the pill
+  -- rather than a stray block of colour.
+  equals("module: full pill",
+    render.module("yellow", "ᵠ", "name", "nameᵠ", PILL, false),
+    "#[fg=yellow,bg=navy]<#[fg=black,bg=yellow]ᵠ "
+      .. "#[fg=white,bg=grey] name#[fg=grey,bg=navy]>#[default]")
+  equals("module: selection recolours rather than reversing",
+    render.module("yellow", "ᵠ", "name", "nameᵠ", PILL, true),
+    "#[fg=yellow,bg=navy]<#[fg=black,bg=yellow]ᵠ "
+      .. "#[fg=black,bg=pink,bold] name#[fg=pink,bg=navy]>#[default]")
+
+  equals("module: plain costs one column", render.overhead(OPTS), 1)
+  equals("module: flat pill costs five", render.overhead(flat, 3), 5)
+  equals("module: capped pill costs seven", render.overhead(PILL, 3), 7)
+  equals("module: two-digit indices cost a column more", render.overhead(PILL, 12), 8)
+end
+
+do
+  equals("roster: plain tier unchanged",
+    render.roster(roster, OPTS, 0, nil),
+    "#[fg=green]✳¹ᶜ#[default] #[fg=blue]✳²⠂#[default] #[fg=yellow]✳³ᵠ#[default]")
+
+  -- Dressed it is a single module however many agents are on it, and the icon
+  -- takes the loudest status: yellow the moment something is waiting.
+  local pilled = render.roster(roster, PILL, 0, nil)
+  equals("roster: one pill for the whole roster", select(2, pilled:gsub("<", "")), 1)
+  check("roster: accent is the loudest status",
+    pilled:find("^#%[fg=yellow,bg=navy]<") ~= nil, pilled)
+  check("roster: badges keep their own colours inside the pill",
+    pilled:find("#%[fg=green%]¹ᶜ") ~= nil, pilled)
+end
+
 do
   local capped = {}
   for i = 1, 12 do capped[i] = { index = i, status = "idle" } end
@@ -210,9 +269,21 @@ do
   for key, value in pairs(OPTS) do opts[key] = value end
   opts.bar_label, opts.bar_width, opts.bar_separator = "name", 12, "  "
 
+  local dressed = setmetatable({
+    module_style = PILL.module_style,
+    separators = PILL.separators,
+    ink = PILL.ink,
+    ground = PILL.ground,
+  }, { __index = opts })
+
   equals("bar: name then status, no icon or index",
     render.bar_entry(roster[3], opts, 0, false),
     "#[fg=yellow]zk auth" .. "ᵠ" .. "#[default]")
+
+  equals("bar: dressed, the number rides in the accent block with the glyph padded",
+    render.bar_entry(roster[3], dressed, 0, false),
+    "#[fg=yellow,bg=navy]<#[fg=black,bg=yellow]3 ᵠ "
+      .. "#[fg=white,bg=grey] zk auth#[fg=grey,bg=navy]>#[default]")
 
   equals("bar: long names are shortened",
     render.bar_name({ name = "luima-security-remediation", dir = "x" }, opts),
@@ -247,6 +318,72 @@ do
     check("bar: crowded output still fits", columns <= 80, "rendered " .. columns .. " columns")
     check("bar: the hidden tail is counted", crowded:find("%+%d+") ~= nil, crowded)
   end
+
+  -- Pills cost six columns an entry, so the same must hold with them on or the
+  -- dressing is what pushes the bar off the edge of the screen.
+  do
+    local narrow = render.bar(roster, dressed, 0, nil, 40):gsub("#%[[^%]]*%]", "")
+    local count = select(2, narrow:gsub("[^\128-\191]", ""))
+    check("fit: dressed output fits the client width", count <= 40, "rendered " .. count .. " columns")
+
+    local many = {}
+    for index = 1, 30 do
+      many[index] = { index = index, name = "agent " .. index, dir = "d", status = "busy", pane = "%" .. index }
+    end
+    local uncapped = setmetatable({ max = 0 }, { __index = dressed })
+    local crowded = render.bar(many, uncapped, 0, nil, 80):gsub("#%[[^%]]*%]", "")
+    local columns = select(2, crowded:gsub("[^\128-\191]", ""))
+    check("bar: dressed and crowded still fits", columns <= 80, "rendered " .. columns .. " columns")
+
+    local selected = render.bar(roster, dressed, 0, "%19")
+    check("bar: dressed selection uses color-selected", selected:find("bg=pink") ~= nil, selected)
+    check("bar: dressed selection does not reverse", selected:find("reverse") == nil, selected)
+  end
+end
+
+-- --- checking a finished agent off ------------------------------------------
+
+do
+  local tracker = require("agent_tracker.init")
+
+  local CLIENTS = table.concat({ "#clients", "239 %10", "180 %99" }, "\n")
+
+  equals("clients: narrowest width still parses", agents.client_width(CLIENTS), 180)
+  local looking = agents.active_panes(CLIENTS)
+  check("clients: a client's pane is active", looking["%10"] and looking["%99"])
+  check("clients: nothing else is", looking["%1"] == nil)
+
+  local function agent(pane, status) return { pane = pane, status = status } end
+
+  -- Finished in a pane you are not sitting in: loud, and nothing written down.
+  local list = { agent("%1", "idle"), agent("%2", "busy") }
+  equals("check: an unlooked-at completion is not checked off",
+    tracker.check_off(list, {}, nil), "")
+  check("check: and is flagged", list[1].unchecked == true)
+  equals("check: which renders as its own status", render.status_key(list[1]), "unchecked")
+  check("check: a busy agent is never flagged", list[2].unchecked == nil)
+
+  list = { agent("%1", "idle") }
+  equals("check: the pane you are in is checked off",
+    tracker.check_off(list, { ["%1"] = true }, nil), "%1")
+  check("check: so it is not flagged", list[1].unchecked == nil)
+
+  list = { agent("%1", "idle") }
+  equals("check: and stays checked once you leave", tracker.check_off(list, {}, "%1"), "%1")
+  check("check: still not flagged", list[1].unchecked == nil)
+
+  -- Back to work: the tick is dropped, so whatever it finishes next is loud again.
+  equals("check: going busy drops the tick",
+    tracker.check_off({ agent("%1", "busy") }, {}, "%1"), "")
+
+  -- The point of all of it.
+  equals("check: the badge goes orange",
+    render.roster({ { index = 1, pane = "%1", status = "idle", unchecked = true } }, OPTS, 0, nil),
+    "#[fg=orange]✳¹ᶜ#[default]")
+
+  local loud = { agent("%1", "busy"), agent("%2", "idle") }
+  tracker.check_off(loud, {}, nil)
+  equals("check: it outranks busy on the roster icon", render.loudest(loud, OPTS), "orange")
 end
 
 -- --- renaming ---------------------------------------------------------------
@@ -317,6 +454,27 @@ check("nav: current of empty is nil", nav.current({}) == nil)
 equals("nav: by index", nav.by_index(roster, 2).dir, "luima")
 check("nav: out of range", nav.by_index(roster, 99) == nil)
 
+-- Following tmux's own pane movement writes the same two options a binding
+-- does. The previous slot is what Tab flips back to, so re-selecting the pane
+-- you are already on must not overwrite it with itself.
+do
+  local wrote = {}
+  local set = tmux.set_global
+  tmux.set_global = function(name, value) wrote[name] = value end
+
+  selection = "%10"
+  nav.select({ pane = "%19" })
+  equals("nav: select remembers the pane left behind", wrote["@agent-tracker-previous"], "%10")
+  equals("nav: select stores the new pane", wrote["@agent-tracker-selected"], "%19")
+
+  wrote = {}
+  nav.select({ pane = "%10" })
+  check("nav: reselecting the current pane leaves previous alone",
+    wrote["@agent-tracker-previous"] == nil)
+
+  tmux.set_global = set
+end
+
 -- --- the bottom bar's placeholder panes -------------------------------------
 
 do
@@ -334,7 +492,9 @@ do
     "@4 %8 21 100 2 100 0 1",     -- right place, but a layout gave it rows
   }, "\n"))
 
-  equals("bottombar: windows found", 4, 4)
+  local found = 0
+  for _ in pairs(windows) do found = found + 1 end
+  equals("bottombar: windows found", found, 4)
   equals("bottombar: bar detected", windows["@1"].bars[1].id, "%2")
   equals("bottombar: non-bar panes counted", windows["@1"].others, 1)
   equals("bottombar: lowest non-bar top", windows["@1"].lowest, 0)
@@ -352,6 +512,46 @@ do
   -- A bar that ended up above a normal pane is out of position.
   local above = bottombar.parse("@9 %1 21 100 20 100 0 \n@9 %2 0 100 0 100 0 1")
   check("bottombar: bar above a pane fails", not bottombar.healthy(above["@9"].bars[1], above["@9"]))
+
+  -- wanting() runs on every poll and decides whether to spend anything at all,
+  -- so a false positive costs two processes a second, forever.
+  local function wanting(text)
+    return bottombar.wanting(bottombar.parse(text))
+  end
+
+  check("wanting: a healthy window wants nothing",
+    not wanting("@1 %1 0 100 20 100 0 \n@1 %2 21 100 0 100 0 1"))
+  check("wanting: a window with no bar wants one",
+    wanting("@1 %1 0 100 20 100 0 "))
+  check("wanting: a drifted bar wants fixing",
+    wanting("@1 %1 0 50 20 100 0 \n@1 %2 0 50 20 100 0 1"))
+  check("wanting: a duplicated bar wants fixing",
+    wanting("@1 %1 0 100 20 100 0 \n@1 %2 21 100 0 100 0 1\n@1 %3 21 100 0 100 0 1"))
+  check("wanting: a zoomed window is left alone",
+    not wanting("@1 %1 0 100 20 100 1 "))
+  check("wanting: a window of nothing but bar is left alone",
+    not wanting("@1 %2 0 100 0 100 0 1"))
+  check("wanting: one bad window among good ones is enough",
+    wanting("@1 %1 0 100 20 100 0 \n@1 %2 21 100 0 100 0 1\n@2 %3 0 100 20 100 0 "))
+
+  -- tmux-resurrect saves panes but not pane options, so a restored placeholder
+  -- comes back the right shape with no mark on it. Left unclaimed it would sit
+  -- there for good while a second bar got built on top of it.
+  local restored = bottombar.parse("@1 %1 0 100 20 100 0 \n@1 %2 21 100 0 100 0 ")
+  equals("orphan: recognised by shape", #restored["@1"].orphans, 1)
+  equals("orphan: not counted as content", restored["@1"].others, 1)
+  equals("orphan: does not move the floor", restored["@1"].lowest, 0)
+  check("orphan: one in the right place is adoptable",
+    bottombar.healthy(restored["@1"].orphans[1], restored["@1"]))
+  check("orphan: a window holding only one wants dealing with", wanting(
+    "@1 %1 0 100 20 100 0 \n@1 %2 21 100 0 100 0 "))
+  check("orphan: a stray beside a good bar wants dealing with", wanting(
+    "@1 %1 0 100 20 100 0 \n@1 %2 21 100 0 100 0 1\n@1 %3 22 100 0 100 0 "))
+
+  -- A real pane is never mistaken for one: zero content rows is the tell.
+  local ordinary = bottombar.parse("@1 %1 0 100 20 100 0 \n@1 %2 21 100 5 100 0 ")
+  equals("orphan: a pane with rows is not one", #ordinary["@1"].orphans, 0)
+  equals("orphan: it counts as content instead", ordinary["@1"].others, 2)
 end
 
 -- --- config -----------------------------------------------------------------
@@ -368,6 +568,35 @@ do
   equals("config: reads our keys", parsed["icon"], "A")
   equals("config: unquotes", parsed["label-width"], "30")
   check("config: ignores other plugins", parsed["thing"] == nil)
+
+  -- tmux applies status-bg over status-style, so a theme that sets only the
+  -- former must not come back as the stock green nobody asked for.
+  config.seed("status-bg #011628\nstatus-style bg=green,fg=black")
+  equals("config: status-bg beats status-style", config.status_bg(), "#011628")
+
+  config.seed('status-style "bg=#1e1e2e,fg=#cdd6f4"')
+  equals("config: falls back to status-style", config.status_bg(), "#1e1e2e")
+
+  config.seed("status-bg default")
+  equals("config: nothing usable is default", config.status_bg(), "default")
+
+  -- Every shipped frame has to be centred in its cell, or the spinner drifts
+  -- against an edge and wobbles there once a second: only dots 2,3,5,6 (the
+  -- middle two rows), and at least one from each dot column. Bit per dot, and
+  -- the arithmetic is longhand because 5.1 has no bitwise operators.
+  local centred = true
+  for _, frame in ipairs(config.list("spinner")) do
+    local _, b2, b3 = frame:byte(1, 3)
+    local dots = ((b2 or 0) % 64 * 64 + (b3 or 0) % 64) % 256
+    local lit = {}
+    for _, dot in ipairs({ 1, 2, 4, 8, 16, 32, 64, 128 }) do
+      lit[dot] = math.floor(dots / dot) % 2 == 1
+    end
+    local edges = lit[1] or lit[8] or lit[64] or lit[128]   -- dots 1, 4, 7, 8
+    local left, right = lit[2] or lit[4], lit[16] or lit[32]  -- dots 2,3 and 5,6
+    if edges or not (left and right) then centred = false end
+  end
+  check("config: every default spinner frame is centred in its cell", centred)
 end
 
 -- --- quoting ----------------------------------------------------------------

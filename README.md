@@ -8,9 +8,15 @@ wants hanging off the top right corner.
 
 ```
 ✳¹ᵠ   waiting on you        yellow
-✳²ᶜ   done, sitting idle    green
-✳³    working               blue, with a spinner
+✳²ᶜ   done, not looked at   orange
+✳³ᶜ   done, and you have    green
+✳⁴    working               blue, with a spinner
 ```
+
+A finished agent stays orange until you have actually been to its pane — the one
+you are sitting in is checked off, so orange means "this one has something you
+have not read". Set it working again and it goes back to orange when it next
+finishes.
 
 Every Claude pane also gets a numbered badge on its bottom border, so you can
 see which agent is which. Then jump straight to whichever one needs you —
@@ -74,11 +80,13 @@ you cannot land in it, and a hook puts the placeholder back when a new window
 appears or `select-layout` throws it out of position. What you are trading away:
 
 - a placeholder pane per window, each holding an idle `sleep` loop
-- `tmux-resurrect` saves them like any other pane, so a restored session comes
-  back with stray one-row panes at the bottom. `tmux-agent-tracker teardown`
-  clears them out, and the hooks rebuild the real ones.
+- `tmux-resurrect` saves them like any other pane. It does not save the pane
+  option marking them as ours, so they come back anonymous; they are recognised
+  by shape and adopted instead of being rebuilt alongside, which needs nothing
+  from you.
 
-Needs `@agent-tracker-pane-border` left on, since the border is what draws it.
+Turning `@agent-tracker-pane-border` off still leaves the bar: the badge row
+under every other pane goes away, the bar pane's border stays.
 
 ## How it knows
 
@@ -92,7 +100,10 @@ working directory:
 
 The plugin reads those, walks up the process tree from each pid until it reaches
 a pane, and draws what it finds. `status` is `waiting`, `idle` or `busy`, which
-is exactly the three things worth knowing.
+is exactly the three things worth knowing. Whether you have looked at a finished
+one is the plugin's own bookkeeping — which pane each attached client is in,
+noted once a second and kept in a tmux option, so it is forgotten when the server
+dies.
 
 Nothing is installed into Claude Code — no hooks, no changes to `settings.json`.
 If an agent exits, its pid stops resolving to a pane and it drops off the roster
@@ -119,6 +130,9 @@ run-shell ~/path/to/tmux-agent-tracker/agent-tracker.tmux
 ```
 
 Needs `tmux` 3.0+ and `lua` 5.1+ (LuaJIT is fine). On macOS: `brew install lua`.
+
+[INTEGRATION.md](INTEGRATION.md) is the step by step version, with a check after
+each one and a troubleshooting section keyed to them.
 
 ## Keys
 
@@ -167,6 +181,12 @@ Keys you press repeatedly to hunt through the roster keep agent mode active.
 Keys that land you somewhere you are about to type in drop out of it, so your
 next keystroke goes to the agent and not to a binding.
 
+Moving between panes tmux's own way counts too: walk into an agent's pane with
+`prefix + →`, vim-tmux-navigator's `C-l`, or a mouse click, and that agent
+becomes the selected one. So `prefix + Tab` flips back to where you came from
+and the bar highlights where you actually are, whichever way you got there.
+`@agent-tracker-follow 'off'` leaves the selection where the bindings put it.
+
 ## Configure
 
 Set any of these before the plugin loads.
@@ -175,13 +195,19 @@ Set any of these before the plugin loads.
 set -g @agent-tracker-icon '✳'
 set -g @agent-tracker-symbol-waiting 'ᵠ'
 set -g @agent-tracker-symbol-complete 'ᶜ'
+set -g @agent-tracker-symbol-unchecked 'ᶜ'    # finished, and you have not been
 set -g @agent-tracker-symbol-busy ''          # empty means animate a spinner
-set -g @agent-tracker-spinner '⠂,⠄,⠆,⠇,⠋,⠉,⠈,⠉'
+set -g @agent-tracker-spinner '⠒,⠢,⠤,⠔'        # frames, centred in the cell
 
 set -g @agent-tracker-color-waiting '#f9e2af'
 set -g @agent-tracker-color-complete '#a6e3a1'
+set -g @agent-tracker-color-unchecked '#fab387'
 set -g @agent-tracker-color-busy '#89b4fa'
+set -g @agent-tracker-color-unknown '#6c7086'
 set -g @agent-tracker-color-selected '#f5c2e7'
+
+set -g @agent-tracker-module-style ''         # empty = plain text; see below
+set -g @agent-tracker-separators ''           # the caps, as a comma pair
 
 set -g @agent-tracker-label 'dir'             # pane border: dir | name | both
 set -g @agent-tracker-label-width '20'
@@ -194,6 +220,7 @@ set -g @agent-tracker-max '0'                 # 0 = every live agent; N caps it
 set -g @agent-tracker-interval '1'            # seconds
 
 set -g @agent-tracker-keys 'on'
+set -g @agent-tracker-follow 'on'             # tmux pane moves change the selection
 set -g @agent-tracker-pane-border 'on'
 set -g @agent-tracker-bar 'on'                # the dedicated status line
 set -g @agent-tracker-bottom-bar 'off'        # or the window's last row instead
@@ -208,6 +235,26 @@ Plain letters instead of superscripts, if your font is unhappy:
 set -g @agent-tracker-symbol-waiting 'q'
 set -g @agent-tracker-symbol-complete 'c'
 ```
+
+### Matching a powerline theme
+
+Out of the box each agent is coloured text, which needs no particular font.
+Themes that draw their modules as pills — catppuccin, powerline, most of the
+popular ones — want the same shape here, and two options give it:
+
+```tmux
+set -g @agent-tracker-module-style 'fg=#cdd6f4,bg=#313244'
+set -g @agent-tracker-separators ','        # U+E0B6, U+E0B4 — needs a Nerd Font
+```
+
+`module-style` is the switch: with it set, each agent becomes a module with its
+status glyph cut out of the status colour and its name on that background. The
+picker menu takes the same colours. `separators` adds the caps on either end —
+set it to `''` for flat pills, or leave both unset for the plain text above.
+
+The colour behind the caps is read from your own `status-bg`, so the bar joins
+the band your theme already draws rather than cutting a strip across it. Pills
+cost about five columns per agent; the bar shrinks names to pay for them.
 
 ### Keeping your own status bar
 

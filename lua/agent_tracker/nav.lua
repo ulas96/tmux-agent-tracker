@@ -112,6 +112,29 @@ function M.script()
   return root and (root .. "/bin/tmux-agent-tracker") or "tmux-agent-tracker"
 end
 
+-- tmux has no menu-style option to inherit from — the picker is stock colours
+-- unless display-menu is told otherwise — so the theming has to travel on the
+-- command. Each flag is passed only when there is a value behind it, leaving
+-- tmux's own defaults in place for anyone who has set nothing.
+function M.menu_styles(opts)
+  local flags = {}
+  local colors = opts.colors or {}
+
+  if (opts.module_style or "") ~= "" then
+    flags[#flags + 1] = "-s " .. tmux.quote(opts.module_style)
+  end
+  if (colors.selected or "") ~= "" then
+    flags[#flags + 1] = "-H " .. tmux.quote(
+      "fg=" .. (opts.ink or "default") .. ",bg=" .. colors.selected .. ",bold"
+    )
+  end
+  if (colors.busy or "") ~= "" then
+    flags[#flags + 1] = "-S " .. tmux.quote("fg=" .. colors.busy)
+  end
+
+  return flags
+end
+
 function M.menu(agents, opts)
   if #agents == 0 then
     tmux.tmux("display-message " .. tmux.quote("no claude agents running"))
@@ -119,6 +142,9 @@ function M.menu(agents, opts)
   end
 
   local parts = { "display-menu -T " .. tmux.quote(" agents ") .. " -x C -y C" }
+  for _, flag in ipairs(M.menu_styles(opts)) do
+    parts[#parts + 1] = flag
+  end
   for _, agent in ipairs(agents) do
     local key = agent.index <= 9 and tostring(agent.index) or ""
     parts[#parts + 1] = table.concat({

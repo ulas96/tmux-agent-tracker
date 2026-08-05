@@ -15,6 +15,7 @@ local NAME = "@agent_name"
 local BAR_TEXT = "@agent_bar_text"
 local TRACKED = "@agent-tracker-panes"
 local SEEN = "@agent-tracker-seen"
+local CHECKED = "@agent-tracker-checked"
 
 -- One gather, then everything else is parsing. config.seed means the option
 -- lookups that follow cost nothing.
@@ -32,11 +33,34 @@ local function refresh_status()
   tmux.tmux("refresh-client -S")
 end
 
--- Writes one user option per agent pane and clears the ones that stopped being
--- agents, all in a single tmux invocation. The pane border format then only has
--- to read #{@agent_badge}, which costs nothing to redraw.
-local function paint_panes(list, opts, frame)
-  local commands = {}
+-- A finished agent stays loud until you have actually been to its pane: sitting
+-- in it is what checks it off. Flags the rest as `unchecked` for the renderer
+-- and returns the new value of the option, which the caller writes.
+--
+-- The list is rebuilt from the agents that are still complete, so an agent that
+-- goes busy again drops its tick and the next thing it finishes is loud too —
+-- no expiry, and nothing to clean up when a pane dies.
+function M.check_off(list, active, previous)
+  local checked = {}
+  for pane in (previous or ""):gmatch("%%%d+") do checked[pane] = true end
+
+  local still = {}
+  for _, agent in ipairs(list) do
+    if render.status_key(agent) == "complete" then
+      if active[agent.pane] or checked[agent.pane] then
+        still[#still + 1] = agent.pane
+      else
+        agent.unchecked = true
+      end
+    end
+  end
+  return table.concat(still, " ")
+end
+
+-- `extra` is whatever else this tick needs written; it rides in the same
+-- invocation rather than costing a fork of its own.
+local function paint_panes(list, opts, frame, extra)
+  local commands = { extra }
   local live = {}
 
   for _, agent in ipairs(list) do
@@ -101,7 +125,8 @@ local function poll(draw)
   local opts = render.options()
   local frame = render.frame()
 
-  paint_panes(list, opts, frame)
+  local checked = M.check_off(list, agents.active_panes(raw), config.raw("checked"))
+  paint_panes(list, opts, frame, tmux.set_global_option(CHECKED, checked))
   announce(list, opts)
 
   local text = draw(list, opts, frame, nav.selected_pane(), agents.client_width(raw))
@@ -111,6 +136,11 @@ local function poll(draw)
   -- so it prints nothing.
   if config.enabled("bottom-bar") then
     tmux.set_global(BAR_TEXT, text)
+    -- The placeholders are put back from here as well as from the hooks. A
+    -- session's first window fires no after-new-window, so a server that had
+    -- only ever been started, never added to, would sit there without a bar at
+    -- all. Checking costs one listing and finds nothing to do almost every time.
+    bottombar.ensure()
     return
   end
 
@@ -203,6 +233,16 @@ function commands.refresh()
   refresh_status()
 end
 
+-- Moving panes with tmux's own keys should move the selection too. The hook
+-- fires only for panes carrying @agent_badge, so the pane is known to be an
+-- agent and there is nothing to gather: two option writes and a redraw.
+-- nav.select only wants a pane id off the agent it is given.
+function commands.select(pane)
+  if not pane or pane == "" then return end
+  nav.select({ pane = pane })
+  refresh_status()
+end
+
 -- Renaming happens in two hops because the name has to come from a tmux prompt:
 -- `rename` opens it, the prompt's template calls `rename-to` with what was
 -- typed. Neither hop carries the pane id — the target is whatever is selected,
@@ -288,7 +328,7 @@ function M.run(argv)
   local handler = commands[name] or commands[name .. "_"]
   if not handler then
     io.stderr:write("tmux-agent-tracker: unknown command '" .. name .. "'\n")
-    io.stderr:write("commands: status roster list goto next prev focus zoom waiting complete last menu rename rename-to refresh ensure teardown doctor\n")
+    io.stderr:write("commands: status roster list goto next prev focus zoom waiting complete last menu rename rename-to select refresh ensure teardown doctor\n")
     return 1
   end
   handler(argv[2])

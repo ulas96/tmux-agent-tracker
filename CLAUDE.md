@@ -36,7 +36,12 @@ computes anything — it only points tmux at the Lua.
    to a pane pid, dedupe per pane (newest wins), sort by session/window/pane so
    "agent 3" stays agent 3. `full_ancestry()` is a second `ps` that only fires
    when a live pid failed to resolve (wrapper scripts).
-3. `paint_panes()` — writes `@agent_badge`/`@agent_label` per pane in a single
+3. `check_off()` — a finished agent renders as `unchecked` (orange) until a
+   client is sitting in its pane. The set of checked-off panes is rebuilt from
+   the agents that are *still* complete, so going busy again clears the tick and
+   nothing needs expiring. Only the drawing path flags it, so `next_with_status`
+   and the CLI still see plain `complete`.
+4. `paint_panes()` — writes `@agent_badge`/`@agent_label` per pane in a single
    batched `tmux` invocation. The border format just reads the option, so redraws
    cost nothing regardless of pane count.
 

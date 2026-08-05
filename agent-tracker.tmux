@@ -60,28 +60,58 @@ if enabled bottom-bar off; then
   # blank with no way to put it back.
   tmux set-option -g status on
   tmux set-option -gu 'status-format[1]'
+  # Matched on the plugin's name and not on "$tracker", because $tracker is not
+  # stable: TPM loads through a symlink, so the same install resolves to the
+  # link one time and its target the next (and on a case-insensitive filesystem
+  # can differ only in case). Comparing paths appends a second copy and the poll
+  # then runs twice a second for as long as tmux is up.
   case "$(tmux show-option -gv status-right)" in
-    *"$tracker status"*) ;;   # already appended on an earlier load
+    *"bin/tmux-agent-tracker status"*) ;;   # already appended on an earlier load
     *) tmux set-option -ga status-right "#($tracker status)" ;;
   esac
 elif enabled bar on; then
   tmux set-option -g status 2
   # Line 0 is left exactly as the theme built it.
+  # No fg/bg of its own: left alone the line inherits status-style, so it shares
+  # the theme's band instead of cutting a strip of terminal background across it.
   tmux set-option -gq status-format[1] \
-    "#[align=left]#[fg=default,bg=default] #($tracker status)#[align=right]#{?#{==:#{client_key_table},agent},#[reverse] agent #[noreverse] ,}"
+    "#[align=left] #($tracker status)#[align=right]#{?#{==:#{client_key_table},agent},#[reverse] agent #[noreverse] ,}"
 fi
 
 # --- pane borders -----------------------------------------------------------
 
 # The badge is written to a per-pane option by the status-line poll, so this
 # format string spawns nothing of its own no matter how many panes are open.
-if enabled pane-border on; then
+# In bottom-bar mode the border is also the bar, so the block still has to run
+# with the badges off — otherwise the format is left at tmux's default and the
+# bar pane shows a pane title instead of the bar.
+if enabled pane-border on || enabled bottom-bar off; then
   tmux set-option -g pane-border-status bottom
 
-  # A bar pane's border is the agent bar; everything else gets its badge. The
-  # bar text comes from a global option, which resolves in a pane-scoped format
-  # just as a per-pane one does, so all the windows share a single value.
-  normal='#{?@agent_badge,#{@agent_badge} #[fg=default]#{@agent_label},#{?pane_active,#[reverse],}#{pane_index}#[default] #{pane_title}}'
+  if enabled pane-border on; then
+    # `default` on a pane border means pane-border-style, not the terminal's own
+    # foreground. A theme that dims its borders — or paints them the background
+    # to stop the badges sitting on a ruled grid — would take the label down with
+    # them, so the label names a colour: the one the pills put their text on when
+    # there is one, and the terminal's otherwise.
+    label_fg="$(option module-style default)"
+    case "$label_fg" in
+      *fg=*)
+        label_fg="${label_fg#*fg=}"
+        label_fg="${label_fg%%,*}"
+        ;;
+      *) label_fg="default" ;;
+    esac
+
+    # A bar pane's border is the agent bar; everything else gets its badge. The
+    # bar text comes from a global option, which resolves in a pane-scoped format
+    # just as a per-pane one does, so all the windows share a single value.
+    normal='#{?@agent_badge,#{@agent_badge} #[fg='"$label_fg"']#{@agent_label},'
+    normal="$normal"'#{?pane_active,#[reverse],}#{pane_index}#[noreverse,fg='"$label_fg"'] #{pane_title}}'
+  else
+    normal=''
+  fi
+
   if enabled bottom-bar off; then
     tmux set-option -g pane-border-format "#{?@agent_bar,#{@agent_bar_text},$normal}"
   else
@@ -96,9 +126,14 @@ if enabled bottom-bar off; then
   # window has none at all, so both have to put it back. ensure only acts on a
   # window that is actually wrong, which is what stops these hooks — which its
   # own splitting and killing fire — from chasing their own tail.
-  tmux set-hook -g after-new-window "run-shell -b '$tracker ensure'"
-  tmux set-hook -g window-layout-changed "run-shell -b '$tracker ensure'"
-  tmux set-hook -g after-kill-pane "run-shell -b '$tracker ensure'"
+  # after-new-window is not fired for the first window of a session, so a server
+  # that had only ever been started would never get a bar from these alone.
+  # session-created and client-attached cover that; the poll covers everything
+  # else, and all of them are cheap when there is nothing to do.
+  for hook in after-new-window window-layout-changed after-kill-pane \
+              session-created client-attached; do
+    tmux set-hook -g "$hook" "run-shell -b '$tracker ensure'"
+  done
   tmux run-shell -b "$tracker ensure"
 fi
 
@@ -157,6 +192,27 @@ if enabled keys on; then
   tmux bind-key -T agent R $run "$tracker refresh" "$sep" $stay
 
   tmux bind-key -T agent Escape display-message "agent mode off"
+fi
+
+# --- following tmux's own pane movement --------------------------------------
+
+# Landing on an agent's pane by any of tmux's own means — a select-pane binding,
+# vim-tmux-navigator, a mouse click — moves the tracker's selection there too, so
+# the bar and prefix+Tab agree with where you actually are.
+#
+# The condition reads @agent_badge, the per-pane option the poll already writes,
+# so the fork only happens on the pane switches that land on an agent — never on
+# ordinary ones.
+#
+# Appended rather than set: after-select-pane is a popular hook and replacing it
+# would silently break whatever else is on it. Appending needs the same guard
+# status-right has, or every re-source stacks another copy.
+if enabled follow on; then
+  case "$(tmux show-hooks -g after-select-pane)" in
+    *"tmux-agent-tracker select"*) ;;
+    *) tmux set-hook -ga after-select-pane \
+         "if -F '#{@agent_badge}' 'run-shell -b \"$tracker select #{pane_id}\"'" ;;
+  esac
 fi
 
 # Paint once now rather than waiting out the first status interval.

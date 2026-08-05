@@ -15,15 +15,35 @@ M.defaults = {
   ["icon"] = "✳",
   ["symbol-waiting"] = "ᵠ",
   ["symbol-complete"] = "ᶜ",
+  -- Finished, and you have not been back to look: same glyph, louder colour.
+  ["symbol-unchecked"] = "ᶜ",
   ["symbol-busy"] = "",
   ["symbol-unknown"] = "·",
-  ["spinner"] = "⠂,⠄,⠆,⠇,⠋,⠉,⠈,⠉",
+  -- A braille cell is a 2x4 dot grid, and a frame is only centred in its column
+  -- if it lights both dot columns and neither the top row (dots 1,4) nor the
+  -- bottom (7,8). That leaves dots 2,3,5,6 — the middle four — and the four
+  -- frames below are every balanced pair of them: a two-dot bar turning 45° a
+  -- frame around the centre of the cell, with equal air on all four sides.
+  -- Frames that light one column only make the spinner jitter sideways.
+  ["spinner"] = "⠒,⠢,⠤,⠔",
 
   ["color-waiting"] = "#f9e2af",
   ["color-complete"] = "#a6e3a1",
+  ["color-unchecked"] = "#fab387",
   ["color-busy"] = "#89b4fa",
   ["color-unknown"] = "#6c7086",
   ["color-selected"] = "#f5c2e7",
+
+  -- Powerline dressing, both off by default: plain coloured text needs no
+  -- particular font and suits a bare tmux, which is what most people have.
+  -- Set them to match a theme that draws its modules as pills:
+  --   set -g @agent-tracker-separators ','          # U+E0B6, U+E0B4
+  --   set -g @agent-tracker-module-style 'fg=#cdd6f4,bg=#313244'
+  -- The separators are the caps on either end; module-style is what the name
+  -- itself sits on. Caps without a module-style have nothing to cap, so
+  -- module-style is the switch that turns the whole shape on.
+  ["separators"] = "",
+  ["module-style"] = "",
 
   -- what the pane border label says: dir | name | both
   ["label"] = "dir",
@@ -58,23 +78,39 @@ M.defaults = {
 }
 
 local cache
+local theme_cache
+
+-- The theme's own options, worth picking up out of the same dump so a pill can
+-- be painted in the colour the status line already uses. Kept in a table of
+-- their own rather than alongside ours, so that an @agent-tracker-status-bg
+-- could never be mistaken for tmux's status-bg.
+local THEME_KEYS = {
+  ["status-bg"] = true,
+  ["status-style"] = true,
+}
+
+local function unquote(value)
+  local inner = value:match('^"(.*)"$')
+  if inner then return (inner:gsub("\\(.)", "%1")) end
+  return value
+end
 
 -- `tmux show -g` prints `name value`, with the value quoted when it contains
--- anything interesting. We only care about our own keys, so everything else is
--- skipped rather than parsed properly.
+-- anything interesting. We only care about a handful of keys, so everything
+-- else is skipped rather than parsed properly.
 local function parse_options(text)
-  local found = {}
+  local found, theme = {}, {}
   for line in text:gmatch("[^\n]+") do
-    local name, value = line:match("^(@agent%-tracker%-[%w%-]+)%s+(.*)$")
-    if name then
-      local unquoted = value:match('^"(.*)"$')
-      if unquoted then
-        value = unquoted:gsub("\\(.)", "%1")
-      end
-      found[name:sub(#M.prefix + 1)] = value
+    -- No brackets in the name pattern, so the status-format array — the one
+    -- option here whose value runs to hundreds of characters — never matches.
+    local name, value = line:match("^([%w@%-]+)%s+(.*)$")
+    if name and name:sub(1, #M.prefix) == M.prefix then
+      found[name:sub(#M.prefix + 1)] = unquote(value)
+    elseif name and THEME_KEYS[name] then
+      theme[name] = unquote(value)
     end
   end
-  return found
+  return found, theme
 end
 
 M.parse_options = parse_options
@@ -82,14 +118,32 @@ M.parse_options = parse_options
 -- Fill the cache from an option dump somebody else already paid for, so the
 -- once-a-second path doesn't fork just to re-read what it just read.
 function M.seed(text)
-  cache = parse_options(text)
+  cache, theme_cache = parse_options(text)
   return cache
 end
 
 function M.load()
   if cache then return cache end
-  cache = parse_options(tmux.query("show-options -g"))
+  cache, theme_cache = parse_options(tmux.query("show-options -g"))
   return cache
+end
+
+-- What the theme paints its status line with, for cutting a glyph out of an
+-- accent or filling the gap behind a powerline cap.
+--
+-- tmux keeps status-bg as an option in its own right and applies it over
+-- status-style, so a theme that sets one wins even though status-style still
+-- reads as the stock `bg=green` it was never asked about. Ask in that order or
+-- every catppuccin user gets a green pill.
+function M.status_bg()
+  M.load()
+  local theme = theme_cache or {}
+  local bg = theme["status-bg"]
+  if not bg or bg == "" or bg == "default" then
+    bg = (theme["status-style"] or ""):match("bg=([^,%s]+)")
+  end
+  if not bg or bg == "" then return "default" end
+  return bg
 end
 
 -- Reads a key with no default behind it, e.g. the stored selection.
