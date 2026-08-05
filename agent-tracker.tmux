@@ -31,7 +31,9 @@ tmux set-option -gq "@agent-tracker-script" "$tracker"
 interval="$(option interval 1)"
 tmux set-option -g status-interval "$interval"
 
-position="$(option status-position bottom)"
+# Only if asked. Both status lines land wherever this points, so leaving it
+# alone means whatever the user already chose keeps working.
+position="$(option status-position off)"
 if [ "$position" != "off" ]; then
   tmux set-option -g status-position "$position"
 fi

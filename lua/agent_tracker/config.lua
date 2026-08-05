@@ -45,7 +45,9 @@ M.defaults = {
   ["keys"] = "on",
   ["pane-border"] = "on",
   ["bar"] = "on",
-  ["status-position"] = "bottom",
+  -- Left alone by default. Both status lines share one position whatever we do,
+  -- so there is nothing to gain by overriding what somebody already set.
+  ["status-position"] = "off",
   ["alert"] = "off",
 }
 

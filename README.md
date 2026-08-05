@@ -24,6 +24,11 @@ see which agent is which. Then jump straight to whichever one needs you —
 ┌──────────────────────┬──────────────────────┐
 │ claude               │ claude               │
 └─ ✳²ᶜ luima ──────────┴─ ✳³ erp ─────────────┘
+```
+
+with the two status lines together at whichever end you keep yours:
+
+```
  session │ 1:erp 2:luima 3:kal │ 14:32          <- your theme, untouched
  five-salt-gradesᵠ  luima-securityᶜ  kal-b6ᶜ    <- the agent bar
 ```
@@ -31,15 +36,21 @@ see which agent is which. Then jump straight to whichever one needs you —
 Names shrink to fit: the bar sizes itself to the narrowest attached client, so
 the agent on the end never quietly falls off the edge.
 
-### On putting one bar at the top and the other at the bottom
+### One bar at the top and the other at the bottom
 
 tmux will not do it. `status-position` is a single value for the whole status
 block — it is not an array — so however many status lines you ask for (up to
-five), they all stack together at the top or all at the bottom. This plugin puts
-the agent bar on the outer edge of that block: with the default
-`status-position bottom` it is the very bottom line of the screen, with your
-theme directly above it. Set `@agent-tracker-status-position 'top'` to move the
-pair to the top instead, or `'off'` to leave the position alone.
+five), they all sit together at the top or all at the bottom.
+
+Your `status-position` is left alone, and the agent bar goes directly under your
+theme: second row from the top if you keep the status line at the top, the very
+bottom row if you keep it at the bottom. Set `@agent-tracker-status-position` to
+`top` or `bottom` if you want the plugin to decide instead.
+
+Painting the true bottom of the screen while the status line is at the top needs
+a real pane down there, one per window, which `select-layout` will resize and
+`tmux-resurrect` will save. That is not worth a status bar, so this does not do
+it.
 
 ## How it knows
 
@@ -145,7 +156,7 @@ set -g @agent-tracker-interval '1'            # seconds
 set -g @agent-tracker-keys 'on'
 set -g @agent-tracker-pane-border 'on'
 set -g @agent-tracker-bar 'on'                # the dedicated status line
-set -g @agent-tracker-status-position 'bottom'  # or 'top', or 'off' to leave yours
+set -g @agent-tracker-status-position 'off'   # 'off' keeps yours; or 'top'/'bottom'
 set -g @agent-tracker-alert 'off'             # message when an agent starts waiting
 set -g @agent-tracker-sessions-dir '~/.claude/sessions'
 ```
@@ -182,6 +193,7 @@ bind-key C-a send-prefix
 
 set -g base-index 1
 set -g mouse on
+set -g status-position top    # the agent bar lands on the row underneath
 set -g pane-active-border-style 'fg=magenta,bg=default'
 set -g pane-border-style 'fg=brightblack,bg=default'
 
