@@ -151,7 +151,7 @@ end
 
 function M.menu(agents, opts, version)
   if #agents == 0 then
-    tmux.tmux("display-message " .. tmux.quote("no claude agents running"))
+    tmux.tmux("display-message " .. tmux.quote("no tracked agents running"))
     return
   end
 

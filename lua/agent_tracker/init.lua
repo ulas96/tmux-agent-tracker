@@ -2,6 +2,7 @@
 
 local agents = require("agent_tracker.agents")
 local bottombar = require("agent_tracker.bottombar")
+local codex_hook = require("agent_tracker.codex_hook")
 local config = require("agent_tracker.config")
 local nav = require("agent_tracker.nav")
 local render = require("agent_tracker.render")
@@ -12,13 +13,12 @@ local M = {}
 local BADGE = "@agent_badge"
 local LABEL = "@agent_label"
 local NAME = "@agent_name"
+local NAME_SESSION = "@agent_name_session"
 local BAR_TEXT = "@agent_bar_text"
 local TRACKED = "@agent-tracker-panes"
 local SEEN = "@agent-tracker-seen"
 local CHECKED = "@agent-tracker-checked"
 
--- One gather, then everything else is parsing. config.seed means the option
--- lookups that follow cost nothing.
 -- One gather, then everything else is parsing: the option dump rides along in
 -- the same read, so config lookups after this cost nothing.
 local function load()
@@ -69,6 +69,10 @@ local function paint_panes(list, opts, frame, extra)
       tmux.set_pane_option(agent.pane, BADGE, render.pane_badge(agent, opts, frame))
     commands[#commands + 1] =
       tmux.set_pane_option(agent.pane, LABEL, render.label(agent, opts))
+    if agent.stale_custom then
+      commands[#commands + 1] = tmux.unset_pane_option(agent.pane, NAME)
+      commands[#commands + 1] = tmux.unset_pane_option(agent.pane, NAME_SESSION)
+    end
   end
 
   for pane in (config.raw("panes") or ""):gmatch("%%%d+") do
@@ -162,12 +166,12 @@ function commands.list()
   for _, agent in ipairs(list) do
     print(render.describe(agent, opts))
   end
-  if #list == 0 then print("no claude agents running") end
+  if #list == 0 then print("no tracked agents running") end
 end
 
 local function go(agent)
   if not agent then
-    tmux.tmux("display-message " .. tmux.quote("no matching claude agent"))
+    tmux.tmux("display-message " .. tmux.quote("no matching agent"))
     return
   end
   nav.select(agent)
@@ -201,7 +205,7 @@ function commands.zoom()
   local list = load()
   local agent = nav.current(list)
   if not agent then
-    tmux.tmux("display-message " .. tmux.quote("no matching claude agent"))
+    tmux.tmux("display-message " .. tmux.quote("no matching agent"))
     return
   end
   nav.select(agent)
@@ -258,7 +262,7 @@ function commands.rename()
   local list, opts = load()
   local agent = nav.current(list)
   if not agent then
-    tmux.tmux("display-message " .. tmux.quote("no claude agents running"))
+    tmux.tmux("display-message " .. tmux.quote("no tracked agents running"))
     return
   end
 
@@ -274,17 +278,23 @@ function commands.rename()
   }, " "))
 end
 
--- Empty input clears the override and hands the agent back its reported task
--- name, so there is no separate "unrename".
+-- Empty input clears the override and hands the agent back its reported chat
+-- name or directory fallback, so there is no separate "unrename".
 commands["rename-to"] = function(name)
   local list = load()
   local agent = nav.current(list)
   if not agent then return end
 
   if name and name ~= "" then
-    tmux.batch({ tmux.set_pane_option(agent.pane, NAME, name) })
+    tmux.batch({
+      tmux.set_pane_option(agent.pane, NAME, name),
+      tmux.set_pane_option(agent.pane, NAME_SESSION, agent.session_key),
+    })
   else
-    tmux.batch({ tmux.unset_pane_option(agent.pane, NAME) })
+    tmux.batch({
+      tmux.unset_pane_option(agent.pane, NAME),
+      tmux.unset_pane_option(agent.pane, NAME_SESSION),
+    })
   end
   refresh_status()
 end
@@ -301,28 +311,80 @@ function commands.teardown()
   bottombar.teardown()
 end
 
--- Prints what the plugin can see. First stop when the status bar is empty.
+local function hook_script()
+  local script = nav.script()
+  local bin = script:match("^(.*)/tmux%-agent%-tracker$")
+  return bin and (bin .. "/tmux-agent-tracker-codex-hook")
+    or "tmux-agent-tracker-codex-hook"
+end
+
+-- Prints privacy-safe provider readiness and the same liveness-checked roster
+-- the bar uses. It never prints session ids, hook payloads or state contents.
 function commands.doctor()
-  local dir = config.sessions_dir()
-  print("lua           " .. _VERSION)
-  print("tmux          " .. (tmux.query("-V"):gsub("%s+$", "")))
-  print("sessions dir  " .. dir)
+  config.load()
+  local providers = table.concat(config.providers(), ",")
+  local raw = agents.gather({
+    providers = providers,
+    claude_dir = config.claude_sessions_dir(),
+    codex_dir = config.codex_state_dir() or "",
+  })
+  config.seed(agents.options_text(raw))
+  nav.use(config.raw("selected"), config.raw("previous"))
 
-  local raw = agents.gather(dir)
-  local sessions = select(2, raw:gsub("\n%s*{", "\n{"))
-  print("session files " .. tostring(sessions))
+  local list, meta = agents.parse(raw, agents.full_ancestry)
+  local opts = render.options()
+  local sources = agents.sources(raw)
+  local claude_source = sources.claude or { path = config.claude_sessions_dir(), status = "0" }
+  local codex_source = sources.codex or { path = config.codex_state_dir() or "", status = "absent" }
+  local cstats = meta.sources.codex
 
-  local list, opts = load()
-  print("agents found  " .. #list)
+  local bridge
+  if codex_hook.configured(hook_script()) then
+    bridge = "configured"
+  elseif cstats.records > 0 then
+    bridge = "state present"
+  else
+    bridge = "not detected"
+  end
+
+  print("lua             " .. _VERSION)
+  print("tmux            " .. (tmux.query("-V"):gsub("%s+$", "")))
+  print("providers       " .. providers)
+  print("claude source   " .. claude_source.path
+    .. " (" .. meta.sources.claude.records .. " records)")
+  print("codex bridge    " .. bridge)
+  print("codex state     " .. codex_source.path
+    .. " (" .. cstats.valid .. " valid, " .. cstats.invalid .. " invalid, "
+    .. cstats.stale .. " stale, " .. (cstats.discovered or 0)
+    .. " live provisional; " .. codex_source.status .. ")")
+  print("agents found    " .. #list .. " (claude " .. (meta.providers.claude or 0)
+    .. ", codex " .. (meta.providers.codex or 0) .. ")")
   for _, agent in ipairs(list) do
-    print("  " .. render.describe(agent, opts))
+    print("  [" .. agent.provider .. "] " .. render.describe(agent, opts))
   end
 
   if #list == 0 then
     print("")
-    print("nothing found. is claude code running inside a tmux pane?")
-    print("check that " .. dir .. " has a .json file per running session.")
+    print("nothing found. start a supported CLI inside a tmux pane.")
+    if config.provider_enabled("claude") then
+      print("Claude is auto-discovered from " .. claude_source.path .. ".")
+    end
+    if config.provider_enabled("codex") then
+      print("Codex requires the trusted hook bridge printed by codex-hook-config.")
+    end
   end
+end
+
+-- Codex invokes this through the dedicated launcher. Success and malformed
+-- input are intentionally silent so hook telemetry cannot enter the UI/model.
+commands["codex-hook"] = function()
+  codex_hook.handle(codex_hook.read_stdin())
+end
+
+-- Read-only by design: users merge this into a reviewed hooks.json themselves.
+commands["codex-hook-config"] = function(state_dir)
+  local output = codex_hook.config_json(hook_script(), state_dir)
+  if output then print(output) end
 end
 
 function M.run(argv)
@@ -332,7 +394,7 @@ function M.run(argv)
   local handler = commands[name] or commands[name .. "_"]
   if not handler then
     io.stderr:write("tmux-agent-tracker: unknown command '" .. name .. "'\n")
-    io.stderr:write("commands: status roster list goto next prev focus zoom waiting complete last menu rename rename-to select refresh ensure teardown doctor\n")
+    io.stderr:write("commands: status roster list goto next prev focus zoom waiting complete last menu rename rename-to select refresh ensure teardown doctor codex-hook codex-hook-config\n")
     return 1
   end
   handler(argv[2])

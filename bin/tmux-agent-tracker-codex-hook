@@ -1,0 +1,12 @@
+#!/bin/sh
+# Dedicated quiet hook launcher. Capturing this pid before exec gives the Lua
+# handler a stable place to begin its parent-process walk.
+set -e
+umask 077
+
+AGENT_TRACKER_HOOK_PID=$$
+AGENT_TRACKER_UID=$(id -u)
+export AGENT_TRACKER_HOOK_PID AGENT_TRACKER_UID
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec "$root/bin/tmux-agent-tracker" codex-hook

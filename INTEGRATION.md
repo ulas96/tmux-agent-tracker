@@ -12,6 +12,7 @@ The [README](README.md) is the tour. This is the runbook.
 - [How the pieces fit](#how-the-pieces-fit)
 - [1. Prerequisites](#1-prerequisites)
 - [2. Install](#2-install)
+- [Codex hook setup](#codex-hook-setup)
 - [3. Choose where the bar goes](#3-choose-where-the-bar-goes)
 - [4. Reload and verify](#4-reload-and-verify)
 - [5. Check the keys](#5-check-the-keys)
@@ -29,16 +30,21 @@ The [README](README.md) is the tour. This is the runbook.
 ## How the pieces fit
 
 Worth two minutes before you start, because every failure below is one of these
-four links coming loose.
+links coming loose.
 
 ```
-  Claude Code
-      │  writes ~/.claude/sessions/<pid>.json  (status, task name, cwd)
+  Claude Code ── native ~/.claude/sessions/<pid>.json ──┐
+                                                        ├─ merged records
+  Codex CLI ── foreground process ── provisional presence ─┐
+            └─ trusted hooks ── minimal lifecycle state ───┘
+      │
+      ├─ no prompts, messages, tool data or transcripts
+      └─ pid + foreground/recorded pane are checked for liveness
       ▼
   tmux status line
       │  runs #(tmux-agent-tracker status) every status-interval
       ▼
-  the poll  ── reads those files
+  the poll  ── reads both bounded sources in the same gather command
             ── walks ppid up from each pid until it reaches a pane
             ── writes @agent_badge on each agent's pane
             └─ prints the bar, or stores it in @agent_bar_text
@@ -53,10 +59,10 @@ Three things follow from this, and they explain most of the troubleshooting:
 - **The status line is the clock.** Nothing polls on its own. If the status line
   is off, or the plugin never got its `#()` onto it, everything freezes with no
   error.
-- **Claude Code has to be running inside tmux**, because the link from an agent
-  to a pane is the process tree. An agent started outside tmux is invisible.
+- **The supported CLI has to be running inside tmux**, because the link from an
+  agent to a pane is the process tree. An agent started outside tmux is invisible.
 - **Nothing is installed into Claude Code.** No hooks, no `settings.json`
-  changes. Removing this plugin leaves no trace there.
+  changes. Codex hooks are a separate, explicit, reviewed opt-in.
 
 ---
 
@@ -66,6 +72,7 @@ Three things follow from this, and they explain most of the troubleshooting:
 tmux -V                 # 3.0 or newer
 lua -v || luajit -v     # 5.1 or newer; LuaJIT is fine
 ls ~/.claude/sessions   # at least one <pid>.json while Claude Code is running
+# Codex is optional; its hook bridge is configured after installing the plugin
 ```
 
 Developed and tested against tmux 3.5a with Lua 5.5 and LuaJIT.
@@ -133,6 +140,59 @@ The executable bit must be set. TPM *executes* a plugin's `.tmux` file rather
 than sourcing it; without `+x` it fails with status 126 and takes the rest of the
 TPM run down with it, so your theme silently stops loading too. `chmod +x` fixes
 it.
+
+### Codex hook setup
+
+Claude discovery is already active. Codex tracking is opt-in: the plugin never
+edits `~/.codex/config.toml` or `~/.codex/hooks.json` during startup.
+
+First print and inspect the current official `hooks.json` shape with the
+absolute handler path for this installation:
+
+```sh
+tracker=~/.tmux/plugins/tmux-agent-tracker/bin/tmux-agent-tracker
+"$tracker" codex-hook-config > /tmp/tmux-agent-tracker-hooks.json
+chmod 600 /tmp/tmux-agent-tracker-hooks.json
+```
+
+If `~/.codex/hooks.json` does not exist, explicitly install the reviewed file:
+
+```sh
+mkdir -p ~/.codex
+install -m 600 /tmp/tmux-agent-tracker-hooks.json ~/.codex/hooks.json
+```
+
+If it does exist, make a timestamped backup and merge the generated event
+groups into its top-level `hooks` object. Preserve its `description` and every
+unrelated hook. Each of these events must contain the tracker command exactly
+once: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`,
+`PostToolUse`, `Stop`, and `SessionEnd`. Do not copy the whole generated file
+over an existing one. Malformed existing JSON should be repaired manually, not
+replaced.
+
+Restart Codex, enter `/hooks`, review the source and exact absolute command, and
+trust it. Codex skips non-managed hooks until their current definition is
+trusted; changing the plugin path or hook definition requires review again.
+See Codex's current [hooks reference](https://learn.chatgpt.com/docs/hooks) for
+the event schema and trust behavior.
+
+The bridge stores only schema/provider, Codex session id, root CLI PID,
+`TMUX_PANE`, cwd, the fallback name `codex`, normalized status, generic
+`waiting_for: approval`, and a Unix-seconds update timestamp. It never stores or reads
+prompt/assistant/tool content, `transcript_path`, auth data, or environment
+dumps. The default state directory is:
+
+```text
+${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/tmux-agent-tracker-${UID}/codex/
+```
+
+The directory and files must remain user-only. `doctor` reports an insecure
+directory but does not print record contents or session ids.
+
+Codex CLI may defer `SessionStart` until the first prompt. Before that happens,
+the poll recognizes only an exact foreground `codex` process attached to a tmux
+pane and shows it with the gray `·` unknown state. The first hook record replaces
+that provisional entry with authoritative lifecycle status.
 
 ---
 
@@ -208,13 +268,15 @@ keyed to them.
 ```
 
 ```
-lua           Lua 5.4
-tmux          tmux 3.5a
-sessions dir  /home/you/.claude/sessions
-session files 3
-agents found  2
-  1 ✳ᶜ  work:1.2  fix-the-login-bug
-  2 ✳ᵠ  work:3.0  refactor-billing (permission prompt)
+lua             Lua 5.4
+tmux            tmux 3.5a
+providers       claude,codex
+claude source   /home/you/.claude/sessions (2 records)
+codex bridge    configured
+codex state     /run/user/1000/tmux-agent-tracker-1000/codex (1 valid, 0 invalid, 0 stale; secure)
+agents found    3 (claude 2, codex 1)
+  [claude] 1 ✳ᶜ  work:1.2  fix-the-login-bug
+  [codex] 2 ✳ᵠ  work:2.0  codex (approval)
 ```
 
 `agents found 0` with a non-zero file count means the pids in those files do not
@@ -340,8 +402,10 @@ The real end-to-end test — it exercises every link in the chain at once.
 | done, idle | `ᶜ` | green | `"status":"idle"` |
 | unrecognised | `·` | grey | anything else |
 
-That last row is deliberate: if Claude Code adds a state, it still draws, with a
-fallback glyph, rather than the agent vanishing.
+That last row is deliberate: if either provider adds a state, it still draws,
+with a fallback glyph, rather than the agent vanishing. Codex waiting currently
+means the documented `PermissionRequest` approval boundary; other UI-specific
+questions are not claimed as detectable.
 
 ---
 
@@ -393,7 +457,11 @@ shrinks names to fit, so a wide monitor and a narrow laptop can share a session
 without the agents on the right falling off the second one. Past the point where
 shrinking runs out, the tail is counted (`+3`) rather than dropped silently.
 
-A renamed agent (`M-a r`) keeps its name whatever `bar-label` says.
+A renamed agent (`M-a r`) keeps its name whatever `bar-label` says. The rename
+belongs to that provider session, not to its pane, so a replacement agent does
+not inherit it. With the default `bar-label name`, an unrenamed agent uses its
+provider-reported chat name and falls back to the working folder when none is
+available.
 
 ### Behaviour
 
@@ -401,11 +469,18 @@ A renamed agent (`M-a r`) keeps its name whatever `bar-label` says.
 |---|---|---|
 | `max` | `0` | entries on the bar; `0` is all of them |
 | `interval` | `1` | seconds between polls; sets `status-interval` |
-| `sessions-dir` | `~/.claude/sessions` | |
+| `providers` | `claude,codex` | comma-separated adapters; set `claude` to disable Codex polling |
+| `claude-sessions-dir` | *(empty)* | provider-specific Claude source; wins over the legacy alias |
+| `sessions-dir` | `~/.claude/sessions` | backward-compatible Claude source alias |
+| `codex-state-dir` | *(empty)* | secure per-user runtime default; override for diagnostics/tests |
 | `alert` | `off` | `display-message` when an agent starts waiting |
 
 `alert` is off on purpose: with a handful of agents running, a message every time
 one of them wants something gets old fast.
+
+When `codex-state-dir` is overridden, pass the same absolute directory to
+`codex-hook-config /absolute/private/state-dir` before merging it. The generated
+command carries the override without calling tmux from the hook path.
 
 ### Wiring
 
@@ -469,6 +544,7 @@ tmux-agent-tracker <command>
 | `roster` | the compact `✳¹ᵠ` badge form |
 | `list` | one line per agent, for a shell |
 | `doctor` | what it can see, and where it looked |
+| `codex-hook-config` | print the reviewed `hooks.json` definition; changes nothing |
 | `goto N` | jump to agent N |
 | `next` / `prev` | move the selection and follow it |
 | `focus` / `zoom` | back to the selected agent, plain or zoomed |
@@ -502,6 +578,25 @@ In order of likelihood:
 2. **The status line is off.** `tmux show -gv status` — `off` means nothing polls.
 3. **No client attached.** A detached session never redraws its status line, so
    `#()` never runs. Expected; it catches up on attach.
+
+### Codex does not appear
+
+Run `doctor`, then check these in order:
+
+1. `codex bridge not detected`: install/merge the printed config, restart Codex,
+   and trust the exact definition in `/hooks`.
+2. No state records: the Codex CLI must be interactive and running inside tmux;
+   detached `codex exec`, cloud, app and IDE sessions are not supported surfaces.
+3. `insecure`: remove symlinks and restore the state directory to mode `0700`
+   and files to `0600`; insecure records are skipped.
+4. `stale`: the recorded PID exited, its ancestry no longer reaches the pane,
+   or the pane id was reused. This is rejected deliberately, not an mtime delay.
+5. `invalid`: a partial/oversized/future-schema record was skipped. A later hook
+   normally replaces it atomically; restart the Codex turn if it persists.
+
+If hooks were merged more than once, `/hooks` may show duplicate tracker
+commands. Keep one exact tracker handler per event: matching hooks run
+concurrently, so duplicates can make state transitions race.
 
 ### The whole top status line went blank
 
@@ -640,8 +735,18 @@ tmux set -g pane-border-status off
 ```
 
 Options the plugin sets are all `@agent-tracker-*`, `@agent_badge`,
-`@agent_label`, `@agent_bar` and `@agent_bar_text`; they die with the server.
-Nothing was written to Claude Code, and nothing outside tmux needs undoing.
+`@agent_label`, `@agent_name`, `@agent_name_session`, `@agent_bar` and
+`@agent_bar_text`; they die with the server.
+Nothing was written to Claude Code.
+
+If you enabled Codex tracking, use `/hooks` to disable it or remove only the
+exact tracker handler entries from `~/.codex/hooks.json`; preserve unrelated
+hooks. Once all Codex sessions have exited, the tracker-owned runtime directory
+may be removed. Disabling Codex polling alone is non-destructive:
+
+```tmux
+set -g @agent-tracker-providers 'claude'
+```
 
 ---
 

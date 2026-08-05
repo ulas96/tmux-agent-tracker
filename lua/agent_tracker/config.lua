@@ -61,7 +61,12 @@ M.defaults = {
   -- the ones on the end vanishing. Set a number to cap it again.
   ["max"] = "0",
   ["interval"] = "1",
+  ["providers"] = "claude,codex",
+  -- `sessions-dir` is the original Claude option. A provider-specific value
+  -- wins when present; keeping the alias avoids a migration flag day.
   ["sessions-dir"] = "~/.claude/sessions",
+  ["claude-sessions-dir"] = "",
+  ["codex-state-dir"] = "",
 
   -- wiring, all opt-out
   ["keys"] = "on",
@@ -175,15 +180,41 @@ end
 function M.list(key)
   local out = {}
   for item in (M.get(key) or ""):gmatch("[^,]+") do
-    out[#out + 1] = item
+    local trimmed = item:match("^%s*(.-)%s*$")
+    if trimmed ~= "" then out[#out + 1] = trimmed end
   end
   return out
 end
 
-function M.sessions_dir()
-  local dir = M.get("sessions-dir")
+local function expand_home(dir)
   local home = os.getenv("HOME") or ""
   return (dir:gsub("^~", home))
+end
+
+function M.providers()
+  return M.list("providers")
+end
+
+function M.provider_enabled(wanted)
+  for _, provider in ipairs(M.providers()) do
+    if provider == wanted then return true end
+  end
+  return false
+end
+
+function M.claude_sessions_dir()
+  local dir = M.raw("claude-sessions-dir")
+    or M.raw("sessions-dir")
+    or M.defaults["sessions-dir"]
+  return expand_home(dir)
+end
+
+-- Backward-compatible API used by older callers and integrations.
+M.sessions_dir = M.claude_sessions_dir
+
+function M.codex_state_dir()
+  local dir = M.raw("codex-state-dir")
+  return dir and expand_home(dir) or nil
 end
 
 return M

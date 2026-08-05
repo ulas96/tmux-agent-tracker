@@ -9,9 +9,9 @@ local M = {}
 
 local SUPERSCRIPT = { "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹" }
 
--- Claude reports busy / idle / waiting. Anything we don't recognise still gets
--- drawn, just with the fallback glyph, so a new state upstream is a cosmetic
--- surprise rather than a missing agent.
+-- Providers normalize to busy / idle / waiting. Anything unrecognised still
+-- draws with the fallback glyph, so a new state upstream is cosmetic rather
+-- than a missing agent.
 local STATUS_KEYS = {
   waiting = "waiting",
   idle = "complete",
@@ -106,16 +106,36 @@ function M.badge(agent, opts, frame)
   return opts.icon .. M.superscript(agent.index) .. symbol
 end
 
+-- The name users see has one provider-independent precedence: an explicit
+-- rename for this session, then the provider's chat title, then the project
+-- directory. Provider words such as "codex" are not useful session names.
+local function nonempty(value)
+  return type(value) == "string" and value ~= "" and value or nil
+end
+
+function M.agent_name(agent)
+  return nonempty(agent.custom)
+    or nonempty(agent.name)
+    or nonempty(agent.dir)
+    or nonempty(agent.provider)
+    or "agent"
+end
+
 function M.label(agent, opts)
-  local text
-  if agent.custom then
-    text = agent.custom
+  local text, custom = nil, nonempty(agent.custom)
+  local name, dir = nonempty(agent.name), nonempty(agent.dir)
+  if custom then
+    text = custom
   elseif opts.label == "name" then
-    text = agent.name
+    text = M.agent_name(agent)
   elseif opts.label == "both" then
-    text = agent.dir .. " " .. agent.name
+    if dir and name and name ~= dir then
+      text = dir .. " " .. name
+    else
+      text = M.agent_name(agent)
+    end
   else
-    text = agent.dir
+    text = dir or M.agent_name(agent)
   end
   return M.truncate(text or "", opts.label_width)
 end
@@ -272,15 +292,20 @@ end
 -- A renamed agent keeps its name whatever bar-label says: you typed it, you
 -- meant it.
 function M.bar_name(agent, opts)
-  local text
-  if agent.custom then
-    text = agent.custom
+  local text, custom = nil, nonempty(agent.custom)
+  local name, dir = nonempty(agent.name), nonempty(agent.dir)
+  if custom then
+    text = custom
   elseif opts.bar_label == "dir" then
-    text = agent.dir
+    text = dir or M.agent_name(agent)
   elseif opts.bar_label == "both" then
-    text = agent.dir .. "/" .. agent.name
+    if dir and name and name ~= dir then
+      text = dir .. "/" .. name
+    else
+      text = M.agent_name(agent)
+    end
   else
-    text = agent.name
+    text = M.agent_name(agent)
   end
   return M.truncate(text or "", opts.bar_width)
 end
@@ -378,7 +403,7 @@ function M.describe(agent, opts)
     opts.icon,
     symbol,
     where,
-    M.truncate(agent.custom or agent.name or "", 40),
+    M.truncate(M.agent_name(agent), 40),
     detail
   )
 end

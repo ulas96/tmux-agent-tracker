@@ -1,7 +1,7 @@
--- A very small JSON decoder.
+-- A very small JSON codec.
 --
--- We only ever read Claude Code's session files, which are a single flat object
--- per line, so this handles objects, arrays, strings, numbers, booleans and null
+-- We read provider session records and write the much smaller Codex bridge
+-- records, so this handles objects, arrays, strings, numbers, booleans and null
 -- and nothing more. It exists instead of a pattern match because task names are
 -- user text and regularly contain quotes:
 --
@@ -148,10 +148,89 @@ function json.decode(str)
   end
   local ok, value = pcall(function()
     local result, pos = decode_value(str, 1)
+    if skip_space(str, pos) <= #str then error("trailing input") end
     return result
   end)
   if not ok then return nil, value end
   return value
+end
+
+local encode_escapes = {
+  ['"'] = '\\"',
+  ["\\"] = "\\\\",
+  ["\b"] = "\\b",
+  ["\f"] = "\\f",
+  ["\n"] = "\\n",
+  ["\r"] = "\\r",
+  ["\t"] = "\\t",
+}
+
+local function encode_string(value)
+  return '"' .. value:gsub('[%z\1-\31\\"]', function(char)
+    return encode_escapes[char] or string.format("\\u%04x", char:byte())
+  end) .. '"'
+end
+
+local function is_array(value)
+  local count, greatest = 0, 0
+  for key in pairs(value) do
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then return false end
+    count = count + 1
+    if key > greatest then greatest = key end
+  end
+  return count > 0 and greatest == count
+end
+
+local encode_value
+
+local function encode_table(value, seen)
+  if seen[value] then error("cyclic table") end
+  seen[value] = true
+
+  local out = {}
+  if is_array(value) then
+    for index = 1, #value do
+      out[#out + 1] = encode_value(value[index], seen)
+    end
+    seen[value] = nil
+    return "[" .. table.concat(out, ",") .. "]"
+  end
+
+  local keys = {}
+  for key in pairs(value) do
+    if type(key) ~= "string" then error("object key is not a string") end
+    keys[#keys + 1] = key
+  end
+  table.sort(keys)
+  for _, key in ipairs(keys) do
+    out[#out + 1] = encode_string(key) .. ":" .. encode_value(value[key], seen)
+  end
+  seen[value] = nil
+  return "{" .. table.concat(out, ",") .. "}"
+end
+
+function encode_value(value, seen)
+  local kind = type(value)
+  if value == json.null then return "null" end
+  if kind == "nil" then return "null" end
+  if kind == "boolean" then return value and "true" or "false" end
+  if kind == "string" then return encode_string(value) end
+  if kind == "number" then
+    if value ~= value or value == math.huge or value == -math.huge then
+      error("non-finite number")
+    end
+    return tostring(value)
+  end
+  if kind == "table" then return encode_table(value, seen) end
+  error("unsupported value type " .. kind)
+end
+
+-- Returns nil plus a message rather than throwing. Hook telemetry must never
+-- interfere with Codex just because a record could not be serialized.
+function json.encode(value)
+  local ok, encoded = pcall(encode_value, value, {})
+  if not ok then return nil, encoded end
+  return encoded
 end
 
 return json

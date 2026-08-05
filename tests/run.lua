@@ -7,9 +7,12 @@ package.path = "./lua/?.lua;./lua/?/init.lua;" .. package.path
 
 local json = require("agent_tracker.json")
 local agents = require("agent_tracker.agents")
+local codex_hook = require("agent_tracker.codex_hook")
+local codex_provider = require("agent_tracker.providers.codex")
 local render = require("agent_tracker.render")
 local nav = require("agent_tracker.nav")
 local config = require("agent_tracker.config")
+local tmux_api = require("agent_tracker.tmux")
 
 local passed, failed = 0, 0
 
@@ -50,6 +53,12 @@ do
 
   check("json: bad input returns nil", json.decode("{oops") == nil)
   check("json: empty returns nil", json.decode("") == nil)
+  check("json: trailing input is rejected", json.decode('{} trailing') == nil)
+  local encoded = assert(json.encode({ text = "a\nb", null = json.null, list = { 1, true } }))
+  local roundtrip = assert(json.decode(encoded))
+  equals("json: encode string escapes", roundtrip.text, "a\nb")
+  equals("json: encode array", roundtrip.list[2], true)
+  equals("json: encode null", roundtrip.null, json.null)
   equals("json: real session line",
     json.decode('{"pid":40050,"sessionId":"2d3f","cwd":"/Users/u/kal","version":"2.1.222",'
       .. '"kind":"interactive","name":"kal-b6","status":"idle","statusUpdatedAt":178}').name,
@@ -108,12 +117,348 @@ equals("roster: index assigned", roster[3].index, 3)
 equals("roster: pane carried", roster[3].pane, "%19")
 equals("roster: waitingFor carried", roster[3].waiting_for, "input needed")
 equals("roster: cwd basename", roster[1].dir, "erp")
+equals("roster: Claude provider tagged", roster[1].provider, "claude")
 
 do
   local names = {}
   for _, agent in ipairs(roster) do names[agent.name] = true end
   check("roster: background job excluded", not names["batch"])
   check("roster: dead agent excluded", not names["ghost"])
+end
+
+-- Provider adapters merge into one roster, ordered only by tmux location.
+do
+  local mixed = FIXTURE:gsub("#sessions", function() return table.concat({
+    " 70000  3161",
+    "#codex_sessions",
+    'session_a.json\t{"schema":1,"provider":"codex","session_id":"session_a",'
+      .. '"pid":70000,"pane":"%1","cwd":"/Users/u/codex-project","name":"codex",'
+      .. '"status":"waiting","waiting_for":"approval","updated_at":60}',
+    "#sessions",
+  }, "\n") end, 1)
+
+  local list, meta = agents.parse(mixed)
+  equals("mixed: one merged roster", #list, 4)
+  local tracked = agents.find(list, "%1")
+  equals("mixed: Codex provider tagged", tracked.provider, "codex")
+  equals("mixed: Codex status normalized", tracked.status, "waiting")
+  check("mixed: provider fallback is not a chat name", tracked.name == nil)
+  equals("mixed: unnamed Codex session uses folder in bar",
+    render.bar_name(tracked, { bar_label = "name", bar_width = 30 }), "codex-project")
+  equals("mixed: generic approval detail", tracked.waiting_for, "approval")
+  equals("mixed: sorted before later windows", tracked.index, 2)
+  equals("mixed: Claude count", meta.providers.claude, 3)
+  equals("mixed: Codex count", meta.providers.codex, 1)
+
+  local wrong = mixed:gsub('"pane":"%%1"', function() return '"pane":"%99"' end, 1)
+  local wrong_list, wrong_meta = agents.parse(wrong)
+  equals("mixed: wrong recorded pane skipped", #wrong_list, 3)
+  equals("mixed: wrong pane is stale", wrong_meta.sources.codex.stale, 1)
+
+  local future = mixed:gsub('"schema":1', '"schema":2', 1)
+  local future_list, future_meta = agents.parse(future)
+  equals("mixed: future schema skipped", #future_list, 3)
+  equals("mixed: future schema invalid", future_meta.sources.codex.invalid, 1)
+
+  local duplicate = mixed:gsub("#sessions", function() return table.concat({
+    'session_z.json\t{"schema":1,"provider":"codex","session_id":"session_z",'
+      .. '"pid":70001,"pane":"%1","cwd":"/Users/u/newer","name":"codex",'
+      .. '"status":"busy","waiting_for":null,"updated_at":61}',
+    "#sessions",
+  }, "\n") end, 1):gsub("#codex_sessions", " 70001  3161\n#codex_sessions", 1)
+  local deduped = agents.parse(duplicate)
+  equals("mixed: newest valid record wins pane", agents.find(deduped, "%1").session_id, "session_z")
+  equals("mixed: duplicate is still one agent", #deduped, 4)
+
+  for _, status in ipairs({ "idle", "busy", "waiting", "unknown" }) do
+    local waiting = status == "waiting" and '"approval"' or "null"
+    local line = 'all_states.json\t{"schema":1,"provider":"codex",'
+      .. '"session_id":"all_states","pid":1,"pane":"%1","cwd":"/tmp/p",'
+      .. '"name":"codex","status":"' .. status .. '","waiting_for":'
+      .. waiting .. ',"updated_at":1}'
+    equals("mixed: Codex adapter accepts " .. status,
+      codex_provider.decode(line).status, status)
+  end
+end
+
+-- --- Codex hook bridge ------------------------------------------------------
+
+do
+  local expected = {
+    SessionStart = "idle",
+    UserPromptSubmit = "busy",
+    PreToolUse = "busy",
+    PermissionRequest = "waiting",
+    PostToolUse = "busy",
+    Stop = "idle",
+  }
+  for event, status in pairs(expected) do
+    equals("hook transition: " .. event, codex_hook.transition(event).status, status)
+  end
+  check("hook transition: SessionEnd removes", codex_hook.transition("SessionEnd").remove)
+  check("hook transition: unknown is ignored", codex_hook.transition("NewEvent") == nil)
+
+  local direct = table.concat({
+    "100 101 /tmp/tmux-agent-tracker /tmp/tmux-agent-tracker codex-hook",
+    "101 200 /bin/sh sh -c tracker",
+    "200 1 /opt/codex /opt/codex",
+  }, "\n")
+  equals("hook pid: native binary through shell", codex_hook.find_codex_pid(100, direct), 200)
+
+  local node = table.concat({
+    "100 101 tracker tracker",
+    "101 201 sh sh -c tracker",
+    "201 1 node /usr/bin/node /opt/lib/node_modules/@openai/codex/bin/codex.js",
+  }, "\n")
+  equals("hook pid: package node shape", codex_hook.find_codex_pid(100, node), 201)
+
+  local unrelated = table.concat({
+    "100 101 tracker tracker",
+    "101 202 sh sh -c tracker",
+    "202 1 bash bash -c 'echo codex'",
+  }, "\n")
+  check("hook pid: argument substring does not match",
+    codex_hook.find_codex_pid(100, unrelated) == nil)
+
+  local payload = {
+    hook_event_name = "PermissionRequest",
+    session_id = "session_safe",
+    cwd = "/tmp/project",
+    prompt = "must never persist",
+    tool_input = { command = "must never persist" },
+    transcript_path = "/private/transcript.jsonl",
+    model = "model-name",
+  }
+  local minimal = codex_hook.record(payload, 4242, "%7", 1785957000)
+  local wire = assert(json.encode(minimal))
+  equals("hook record: normalized status", minimal.status, "waiting")
+  equals("hook record: generic waiting reason", minimal.waiting_for, "approval")
+  check("hook record: prompt omitted", not wire:find("must never persist", 1, true))
+  check("hook record: transcript omitted", not wire:find("transcript", 1, true))
+  check("hook record: model omitted", not wire:find("model-name", 1, true))
+
+  local decoded = codex_provider.decode("session_safe.json\t" .. wire)
+  equals("hook record: provider accepts its contract", decoded.session_id, "session_safe")
+  check("hook record: invalid session id rejected",
+    codex_provider.decode("bad.json\t" .. wire:gsub("session_safe", "bad/id")) == nil)
+
+  local config_json = assert(codex_hook.config_json("/tmp/plugin's path/hook"))
+  local hook_config = assert(json.decode(config_json))
+  equals("hook config: all seven events", (function()
+    local count = 0
+    for _ in pairs(hook_config.hooks) do count = count + 1 end
+    return count
+  end)(), 7)
+  equals("hook config: conservative timeout",
+    hook_config.hooks.SessionEnd[1].hooks[1].timeout, 3)
+  check("hook config: absolute path shell quoted",
+    hook_config.hooks.Stop[1].hooks[1].command:find("plugin", 1, true) ~= nil
+      and hook_config.hooks.Stop[1].hooks[1].command:find("'\\''", 1, true) ~= nil)
+  local custom_config = assert(json.decode(assert(
+    codex_hook.config_json("/tmp/hook", "/tmp/private state")
+  )))
+  check("hook config: explicit state path carried safely",
+    custom_config.hooks.Stop[1].hooks[1].command:find(
+      "AGENT_TRACKER_CODEX_STATE_DIR='/tmp/private state'", 1, true
+    ) ~= nil)
+end
+
+-- Exercise the real atomic file boundary in a throwaway directory. This stays
+-- outside Codex config and never needs a running tmux server.
+do
+  local root = os.tmpname() .. "-tmux agent tracker's state"
+  os.remove(root)
+  local state = root .. "/state"
+  local env = {
+    AGENT_TRACKER_CODEX_STATE_DIR = state,
+    AGENT_TRACKER_HOOK_PID = "9000",
+    AGENT_TRACKER_UID = "501",
+    TMUX_PANE = "%7",
+  }
+  local function payload(event, session)
+    return assert(json.encode({
+      hook_event_name = event,
+      session_id = session or "hook_file",
+      cwd = "/tmp/project",
+      prompt = "private prompt",
+      tool_input = { command = "private command" },
+    }))
+  end
+  local function read(path)
+    local file = io.open(path, "rb")
+    if not file then return nil end
+    local data = file:read("*a")
+    file:close()
+    return data
+  end
+
+  local target = state .. "/hook_file.json"
+  check("hook file: SessionStart succeeds quietly",
+    codex_hook.handle(payload("SessionStart"), env, { pid = 4242, now = 100 }))
+  equals("hook file: SessionStart is idle", assert(json.decode(read(target))).status, "idle")
+
+  local transitions = {
+    UserPromptSubmit = "busy",
+    PermissionRequest = "waiting",
+    PreToolUse = "busy",
+    PostToolUse = "busy",
+    Stop = "idle",
+  }
+  local moment = 101
+  for event, status in pairs(transitions) do
+    check("hook file: " .. event .. " writes", codex_hook.handle(
+      payload(event), env, { pid = 4242, now = moment }
+    ))
+    local record = assert(json.decode(read(target)))
+    equals("hook file status: " .. event, record.status, status)
+    if event == "PermissionRequest" then
+      equals("hook file: approval is generic", record.waiting_for, "approval")
+    end
+    moment = moment + 1
+  end
+
+  local contents = read(target)
+  check("hook file: prompt payload absent", not contents:find("private prompt", 1, true))
+  check("hook file: tool payload absent", not contents:find("private command", 1, true))
+  local dir_mode = tmux_api.capture(
+    "stat -f %Lp " .. tmux_api.quote(state) .. " 2>/dev/null || stat -c %a "
+      .. tmux_api.quote(state) .. " 2>/dev/null"
+  ):match("(%d+)")
+  local file_mode = tmux_api.capture(
+    "stat -f %Lp " .. tmux_api.quote(target) .. " 2>/dev/null || stat -c %a "
+      .. tmux_api.quote(target) .. " 2>/dev/null"
+  ):match("(%d+)")
+  equals("hook file: directory mode", dir_mode, "700")
+  equals("hook file: record mode", file_mode, "600")
+
+  check("hook file: missing TMUX_PANE is a no-op", codex_hook.handle(
+    payload("SessionStart", "outside_tmux"), {
+      AGENT_TRACKER_CODEX_STATE_DIR = state,
+      AGENT_TRACKER_HOOK_PID = "9001",
+    }, { pid = 4242, now = 110 }
+  ))
+  check("hook file: outside tmux creates nothing",
+    read(state .. "/outside_tmux.json") == nil)
+  check("hook file: malformed input is a no-op", codex_hook.handle("{oops", env))
+  check("hook file: oversized input is a no-op",
+    codex_hook.handle(string.rep("x", codex_hook.MAX_INPUT_BYTES + 1), env))
+  check("hook file: unknown event is a no-op",
+    codex_hook.handle(payload("FutureEvent", "future"), env))
+  check("hook file: invalid session id is a no-op", codex_hook.handle(
+    payload("SessionStart", "bad/session"), env, { pid = 4242, now = 111 }
+  ))
+  local bad_pane = {}
+  for key, value in pairs(env) do bad_pane[key] = value end
+  bad_pane.TMUX_PANE = "pane-7"
+  check("hook file: invalid pane is a no-op", codex_hook.handle(
+    payload("SessionStart", "bad_pane"), bad_pane, { pid = 4242, now = 112 }
+  ))
+
+  check("hook file: SessionEnd removes exact record",
+    codex_hook.handle(payload("SessionEnd"), env, { now = 120 }))
+  check("hook file: record removed", read(target) == nil)
+
+  local sentinel = root .. "/sentinel"
+  local sentinel_file = assert(io.open(sentinel, "wb"))
+  sentinel_file:write("keep")
+  sentinel_file:close()
+  os.execute("ln -s " .. tmux_api.quote(sentinel) .. " " .. tmux_api.quote(target))
+  check("hook file: symlink destination rejected", not codex_hook.handle(
+    payload("SessionStart"), env, { pid = 4242, now = 121 }
+  ))
+  equals("hook file: symlink target untouched", read(sentinel), "keep")
+
+  local debris = tmux_api.capture(
+    "find " .. tmux_api.quote(state) .. " -maxdepth 1 -name '*.tmp' -print"
+  )
+  equals("hook file: no temporary debris", debris, "")
+
+  os.execute("rm -r " .. tmux_api.quote(root))
+end
+
+-- The hot-path command has one targeted process query and no per-record shell
+-- loop, even with paths containing spaces and quotes.
+do
+  local capture = tmux_api.capture
+  tmux_api.capture = function(command) return command end
+  local command = agents.gather({
+    providers = "claude,codex",
+    claude_dir = "/tmp/Claude's sessions",
+    codex_dir = "/tmp/Codex state",
+  })
+  tmux_api.capture = capture
+
+  equals("gather: one targeted ps branch",
+    select(2, command:gsub("ps %-o pid=,ppid=", "")), 1)
+  equals("gather: one full ps branch for blank Codex",
+    select(2, command:gsub("ps %-eo pid=,ppid=,stat=,comm=", "")), 1)
+  check("gather: ps branches are mutually exclusive",
+    command:find('if %[ "%$codex_probe" = 1 %]; then') ~= nil
+      and command:find("else ps %-o pid=,ppid=") ~= nil)
+  check("gather: no per-record shell loop", not command:find("for "))
+  check("gather: quoted path survives", command:find("Claude", 1, true) ~= nil)
+  check("gather: rename owner rides with pane data",
+    command:find("#{@agent_name_session}", 1, true) ~= nil)
+end
+
+-- Codex currently defers SessionStart until the first prompt on some CLI
+-- startup paths. The foreground process makes a blank TUI visible immediately;
+-- its first hook record replaces the provisional unknown state.
+do
+  local blank = table.concat({
+    "#panes",
+    "68612 %21 5 0 work\t\t\tcodex\t/Users/u/new-project",
+    "#sources",
+    "codex\t/tmp/state\tsecure",
+    "#procs",
+    "68612 2462 S+ -zsh",
+    "75645 68612 S+ codex",
+  }, "\n")
+  local list, meta = agents.parse(blank)
+  equals("Codex provisional: blank TUI appears", #list, 1)
+  equals("Codex provisional: provider", list[1].provider, "codex")
+  equals("Codex provisional: foreground pid", list[1].pid, 75645)
+  equals("Codex provisional: pane", list[1].pane, "%21")
+  equals("Codex provisional: cwd label", list[1].dir, "new-project")
+  equals("Codex provisional: unknown until hook", list[1].status, "unknown")
+  check("Codex provisional: explicitly marked", list[1].provisional)
+  equals("Codex provisional: doctor count", meta.sources.codex.discovered, 1)
+
+  local stopped = blank:gsub("75645 68612 S%+ codex", "75645 68612 T codex")
+  equals("Codex provisional: stopped old job excluded", #agents.parse(stopped), 0)
+
+  local unrelated = blank:gsub("\t\t\tcodex\t", "\t\t\tzsh\t")
+  equals("Codex provisional: non-Codex pane excluded", #agents.parse(unrelated), 0)
+
+  local hook_section = table.concat({
+    "#codex_sessions",
+    'session_new.json\t{"schema":1,"provider":"codex","session_id":"session_new",'
+      .. '"pid":75645,"pane":"%21","cwd":"/Users/u/new-project","name":"codex",'
+      .. '"status":"busy","waiting_for":null,"updated_at":10}',
+    "#sources",
+  }, "\n")
+  local tracked = blank:gsub("#sources", function() return hook_section end, 1)
+  local authoritative, tracked_meta = agents.parse(tracked)
+  equals("Codex provisional: hook state replaces fallback", #authoritative, 1)
+  equals("Codex provisional: authoritative status", authoritative[1].status, "busy")
+  check("Codex provisional: authoritative is not provisional",
+    not authoritative[1].provisional)
+  equals("Codex provisional: no fallback counted with hook",
+    tracked_meta.sources.codex.discovered, 0)
+
+  local old_hook_section = hook_section
+    :gsub('"pid":75645', '"pid":70000')
+    :gsub('"status":"busy"', '"status":"idle"')
+  local restarted = blank
+    :gsub("75645 68612 S%+ codex", "70000 68612 T codex\n75645 68612 S+ codex")
+    :gsub("#sources", function() return old_hook_section end, 1)
+  local replacement, replacement_meta = agents.parse(restarted)
+  equals("Codex provisional: foreground restart replaces stopped record",
+    replacement[1].pid, 75645)
+  check("Codex provisional: foreground restart is provisional",
+    replacement[1].provisional)
+  equals("Codex provisional: stopped record is stale",
+    replacement_meta.sources.codex.stale, 1)
 end
 
 -- An agent behind a wrapper process is not in the cheap ps output, so parse has
@@ -146,6 +491,23 @@ do
   local calls = 0
   agents.parse(FIXTURE, function() calls = calls + 1; return "" end)
   equals("fallback: not called when all resolve", calls, 0)
+end
+
+do
+  local full_but_unresolved = table.concat({
+    "#panes",
+    "3161 %1 1 0 work\t\t\tcodex\t/Users/u/project",
+    "#procs",
+    "3161 1 S+ -zsh",
+    "70000 9999 S codex",
+    "#codex_sessions",
+    'session_old.json\t{"schema":1,"provider":"codex","session_id":"session_old",'
+      .. '"pid":70000,"pane":"%1","cwd":"/Users/u/project","name":"codex",'
+      .. '"status":"idle","waiting_for":null,"updated_at":10}',
+  }, "\n")
+  local calls = 0
+  agents.parse(full_but_unresolved, function() calls = calls + 1; return "" end)
+  equals("fallback: full Codex table is never queried twice", calls, 0)
 end
 
 -- Two session files pointing at one pane: the newer one wins.
@@ -391,31 +753,40 @@ end
 do
   local renamed = agents.parse(table.concat({
     "#panes",
-    "3161 %1 1 0 work\tshipping api",   -- @agent_name set on the pane
+    "3161 %1 1 0 work\tshipping api\tclaude:chat_a",
     "4051 %10 3 2 my session",          -- no tab at all: older format string
+    "8888 %30 4 0 work\tprevious chat\tclaude:old_chat",
     "#procs",
     "  3161     1",
     "  4051     1",
+    "  8888     1",
     " 40050  3161",
     " 44444  4051",
+    " 55555  8888",
     "#sessions",
-    '{"pid":40050,"cwd":"/Users/u/kal","name":"zk auth","status":"busy","kind":"interactive"}',
+    '{"pid":40050,"sessionId":"chat_a","cwd":"/Users/u/kal","name":"zk auth","status":"busy","kind":"interactive"}',
     '{"pid":44444,"cwd":"/Users/u/luima","name":"trees","status":"busy","kind":"interactive"}',
+    '{"pid":55555,"sessionId":"new_chat","cwd":"/Users/u/fresh","status":"busy","kind":"interactive"}',
   }, "\n"))
 
   -- Sorted by session name, so "my session" lands ahead of "work".
   local named = agents.find(renamed, "%1")
   local plain = agents.find(renamed, "%10")
+  local replacement = agents.find(renamed, "%30")
 
-  equals("rename: custom name carried", named.custom, "shipping api")
+  equals("rename: session-owned name carried", named.custom, "shipping api")
+  equals("rename: stable session key carried", named.session_key, "claude:chat_a")
   equals("rename: session name still parses", named.session, "work")
   check("rename: absent means nil", plain.custom == nil)
   equals("rename: spaces in a session name survive", plain.session, "my session")
+  check("rename: old session name does not reach replacement", replacement.custom == nil)
+  check("rename: mismatched owner is marked for cleanup", replacement.stale_custom)
 
   local opts = { bar_label = "name", bar_width = 20, label = "dir", label_width = 20 }
   equals("rename: the bar shows it", render.bar_name(named, opts), "shipping api")
   equals("rename: the pane border shows it", render.label(named, opts), "shipping api")
-  equals("rename: others keep the reported name", render.bar_name(plain, opts), "trees")
+  equals("rename: chat title wins over folder", render.bar_name(plain, opts), "trees")
+  equals("rename: unnamed replacement uses folder", render.bar_name(replacement, opts), "fresh")
 end
 
 -- --- navigation -------------------------------------------------------------
@@ -589,6 +960,22 @@ do
   equals("config: reads our keys", parsed["icon"], "A")
   equals("config: unquotes", parsed["label-width"], "30")
   check("config: ignores other plugins", parsed["thing"] == nil)
+
+  config.seed(table.concat({
+    "@agent-tracker-providers claude,codex",
+    "@agent-tracker-sessions-dir /tmp/legacy",
+    "@agent-tracker-claude-sessions-dir /tmp/specific",
+    "@agent-tracker-codex-state-dir /tmp/codex",
+  }, "\n"))
+  equals("config: provider list", table.concat(config.providers(), ","), "claude,codex")
+  check("config: Codex enabled", config.provider_enabled("codex"))
+  equals("config: provider-specific Claude dir wins",
+    config.claude_sessions_dir(), "/tmp/specific")
+  equals("config: explicit Codex dir", config.codex_state_dir(), "/tmp/codex")
+
+  config.seed("@agent-tracker-sessions-dir /tmp/legacy")
+  equals("config: legacy Claude dir remains supported",
+    config.claude_sessions_dir(), "/tmp/legacy")
 
   -- tmux applies status-bg over status-style, so a theme that sets only the
   -- former must not come back as the stock green nobody asked for.

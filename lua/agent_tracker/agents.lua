@@ -1,114 +1,204 @@
--- Finding the agents.
+-- Finding and merging pane-backed agents.
 --
--- Claude Code writes a small JSON file per process to ~/.claude/sessions/<pid>.json
--- containing its status (busy / idle / waiting), the task name and the cwd. That
--- gives us everything except where the thing is on screen, which we get by walking
--- the process tree from the agent's pid up to a pane's pid.
---
--- A dead agent leaves its file behind but has no live pane ancestor, so stale
--- entries drop out on their own and there is no expiry to maintain.
+-- Claude Code supplies native session records. Codex lifecycle hooks supply
+-- tracker-owned records containing identity, pane and normalized status. Codex
+-- currently defers SessionStart until the first prompt in some CLI paths, so a
+-- foreground-process fallback makes a brand-new blank TUI navigable immediately;
+-- the hook record replaces that provisional state as soon as it arrives.
+-- Both become the same in-memory model here, then share one ancestry walk,
+-- deduplication pass, ordering rule, renderer and navigation layer.
 
-local json = require("agent_tracker.json")
+local claude = require("agent_tracker.providers.claude")
+local codex = require("agent_tracker.providers.codex")
 local tmux = require("agent_tracker.tmux")
 
 local M = {}
 
 local MAX_ANCESTRY_HOPS = 32
+local MAX_RECORDS = 256
+local MAX_CLAUDE_RECORD_BYTES = 65536
 
--- Everything we need to read, in one shell invocation, marked off with section
--- headers. This runs once a second forever, so the fork count is the thing
--- worth being careful about — options come along for the ride because they live
--- in the same tmux server we are already talking to.
-function M.gather(sessions_dir)
-  -- The sessions directory is itself a tmux option, so it gets resolved inside
-  -- this same shell rather than costing an extra round trip to find out where
-  -- to look.
-  local resolve = sessions_dir
-      and ("dir=" .. tmux.quote(sessions_dir))
-    or table.concat({
-      'dir=$(tmux show-option -gqv @agent-tracker-sessions-dir)',
-      'dir=${dir:-$HOME/.claude/sessions}',
-      'case "$dir" in "~"*) dir="$HOME${dir#\\~}" ;; esac',
+local function setting(value, fallback)
+  if value == nil or value == "" then return fallback end
+  return value
+end
+
+-- Everything needed for a tick is emitted by one sh process with marked
+-- sections. Record work is bounded and every helper process handles the whole
+-- source; the fork count never grows with the number of agents.
+function M.gather(overrides)
+  if type(overrides) == "string" then overrides = { claude_dir = overrides } end
+
+  local resolve
+  if type(overrides) == "table" then
+    resolve = table.concat({
+      "options=$(tmux show-options -g)",
+      "providers=" .. tmux.quote(setting(overrides.providers, "claude,codex")),
+      "claude_dir=" .. tmux.quote(setting(overrides.claude_dir, "~/.claude/sessions")),
+      "codex_dir=" .. tmux.quote(setting(overrides.codex_dir, "")),
     }, "; ")
+  else
+    local options_awk = table.concat({
+      "{ key=$1; value=$0; sub(/^[^ ]+[ ]/, \"\", value);",
+      "if (substr(value,1,1)==\"\\\"\" && substr(value,length(value),1)==\"\\\"\")",
+      "value=substr(value,2,length(value)-2);",
+      "if (key==\"@agent-tracker-providers\") providers=value;",
+      "else if (key==\"@agent-tracker-claude-sessions-dir\") claude=value;",
+      "else if (key==\"@agent-tracker-sessions-dir\") legacy=value;",
+      "else if (key==\"@agent-tracker-codex-state-dir\") codex=value }",
+      "END { printf \"%s%c%s%c%s%c%s\", providers,28,claude,28,legacy,28,codex }",
+    }, " ")
+    resolve = table.concat({
+      "options=$(tmux show-options -g)",
+      "settings=$(printf '%s\\n' \"$options\" | awk " .. tmux.quote(options_awk) .. ")",
+      "separator=$(printf '\\034')",
+      "old_ifs=$IFS; IFS=$separator; set -f; set -- $settings; set +f; IFS=$old_ifs",
+      "providers=$1; claude_dir=$2; legacy_dir=$3; codex_dir=$4",
+      "providers=${providers:-claude,codex}",
+      "claude_dir=${claude_dir:-${legacy_dir:-~/.claude/sessions}}",
+    }, "; ")
+  end
+
+  local claude_awk = string.format(
+    "FNR == 1 && length($0) <= %d && count < %d { "
+      .. "name=FILENAME; sub(/^.*\\//, \"\", name); sub(/\\.json$/, \"\", name); "
+      .. "print name \"\\t\" $0; count++ }",
+    MAX_CLAUDE_RECORD_BYTES,
+    MAX_RECORDS
+  )
+  local codex_awk = string.format(
+    "FNR == 1 && length($0) <= %d && count < %d { "
+      .. "name=FILENAME; sub(/^.*\\//, \"\", name); print name \"\\t\" $0; count++ }",
+    codex.MAX_RECORD_BYTES,
+    MAX_RECORDS
+  )
 
   local script = table.concat({
     resolve,
-    "printf '#panes\\n'",
-    -- Two of these fields can contain spaces, so a tab separates them: session
-    -- names are tmux's to police, and @agent_name is whatever the user typed at
-    -- the rename prompt.
-    "tmux list-panes -a -F "
+    "case \"$claude_dir\" in \"~\"*) claude_dir=\"$HOME${claude_dir#\\~}\" ;; esac",
+    "uid=$(id -u)",
+    "if [ -z \"$codex_dir\" ]; then "
+      .. "runtime=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}; "
+      .. "runtime=${runtime%/}; "
+      .. "codex_dir=$runtime/tmux-agent-tracker-$uid/codex; fi",
+    "case \"$codex_dir\" in \"~\"*) codex_dir=\"$HOME${codex_dir#\\~}\" ;; esac",
+
+    "claude_on=0; codex_on=0",
+    "case ,\"$providers\", in *,claude,*) claude_on=1 ;; esac",
+    "case ,\"$providers\", in *,codex,*) codex_on=1 ;; esac",
+
+    "codex_security=disabled; codex_stat=none",
+    "if [ \"$codex_on\" = 1 ]; then "
+      .. "codex_security=absent; "
+      .. "if [ -L \"$codex_dir\" ]; then codex_security=insecure; "
+      .. "elif [ -d \"$codex_dir\" ]; then "
+      .. "mode=$(stat -f %Lp \"$codex_dir\" 2>/dev/null) && codex_stat=bsd; "
+      .. "if [ \"$codex_stat\" = none ]; then mode=$(stat -c %a \"$codex_dir\" 2>/dev/null) && codex_stat=gnu; fi; "
+      .. "if [ -O \"$codex_dir\" ] && [ \"$mode\" = 700 ]; then codex_security=secure; "
+      .. "else codex_security=insecure; fi; "
+      .. "elif [ -e \"$codex_dir\" ]; then codex_security=insecure; fi; fi",
+
+    "pane_data=$(tmux list-panes -a -F "
       .. tmux.quote(
-        "#{pane_pid} #{pane_id} #{window_index} #{pane_index} #{session_name}\t#{@agent_name}"
-      ),
+        "#{pane_pid} #{pane_id} #{window_index} #{pane_index} #{session_name}"
+          .. "\t#{@agent_name}\t#{@agent_name_session}"
+          .. "\t#{pane_current_command}\t#{pane_current_path}"
+      ) .. ")",
+    "printf '#panes\\n%s\\n' \"$pane_data\"",
     "printf '#options\\n'",
-    "tmux show-options -g",
+    "printf '%s\\n' \"$options\"",
     "printf '#clients\\n'",
-    -- A client's format expansion falls through session → current window →
-    -- active pane, so #{pane_id} here is the pane that client is looking at.
-    -- That is what marks a finished agent as checked, and it rides along in the
-    -- read we were already doing for the width.
     "tmux list-clients -F '#{client_width} #{pane_id}'",
+    "printf '#sources\\n'",
+    "printf 'claude\\t%s\\t%s\\n' \"$claude_dir\" \"$claude_on\"",
+    "printf 'codex\\t%s\\t%s\\n' \"$codex_dir\" \"$codex_security\"",
+
+    "claude_data=",
+    "if [ \"$claude_on\" = 1 ] && [ -d \"$claude_dir\" ]; then "
+      .. "claude_data=$(cd \"$claude_dir\" && "
+      .. "find . -maxdepth 1 -type f -name '*.json' -print 2>/dev/null "
+      .. "| LC_ALL=C grep -E '^\\./[0-9]+\\.json$' | head -n " .. MAX_RECORDS .. " "
+      .. "| xargs awk " .. tmux.quote(claude_awk) .. " 2>/dev/null); fi",
+    "printf '#claude_sessions\\n%s\\n' \"$claude_data\"",
+
+    "codex_data=",
+    "if [ \"$codex_security\" = secure ]; then "
+      .. "if [ \"$codex_stat\" = bsd ]; then "
+      .. "codex_data=$(cd \"$codex_dir\" && "
+      .. "find . -maxdepth 1 -type f -links 1 -user \"$uid\" ! -perm +077 -name '*.json' -print 2>/dev/null "
+      .. "| LC_ALL=C grep -E '^\\./[A-Za-z0-9_-]+\\.json$' | head -n " .. MAX_RECORDS .. " "
+      .. "| xargs awk " .. tmux.quote(codex_awk) .. " 2>/dev/null); "
+      .. "else codex_data=$(cd \"$codex_dir\" && "
+      .. "find . -maxdepth 1 -type f -links 1 -user \"$uid\" ! -perm /077 -name '*.json' -print 2>/dev/null "
+      .. "| LC_ALL=C grep -E '^\\./[A-Za-z0-9_-]+\\.json$' | head -n " .. MAX_RECORDS .. " "
+      .. "| xargs awk " .. tmux.quote(codex_awk) .. " 2>/dev/null); fi; fi",
+    "printf '#codex_sessions\\n%s\\n' \"$codex_data\"",
+
     "printf '#procs\\n'",
-    -- Session files are named <pid>.json, so the pid list comes from the
-    -- filenames without anybody having to parse JSON first. Asking ps about
-    -- those pids specifically costs ~6ms against ~40ms for a full process
-    -- listing, which matters when this runs every second all day. Anything
-    -- that fails to resolve falls back to the full listing below.
-    'pids=$(ls "$dir" 2>/dev/null | sed -n "s/\\.json$//p" | tr "\\n" "," )',
-    'ps -o pid=,ppid= -p "${pids}$$" 2>/dev/null',
-    "printf '#sessions\\n'",
-    -- awk rather than cat: the session files have no trailing newline, so cat
-    -- welds the end of one JSON object onto the start of the next and both are
-    -- lost. `awk 1` prints every line and terminates it.
-    'awk 1 "$dir"/*.json',
+    -- A newly opened Codex TUI can exist before its deferred SessionStart hook.
+    -- In that case one full process table finds the foreground Codex child of
+    -- the pane shell. Otherwise the cheaper provider-record PID query remains
+    -- the normal path. Exactly one ps runs in this gathering shell either way.
+    "pids=$(printf '%s\\n%s\\n' \"$claude_data\" \"$codex_data\" "
+      .. "| sed -n -e 's/^\\([0-9][0-9]*\\)\\t.*/\\1/p' "
+      .. "-e 's/^[^\\t]*\\t.*\"pid\":[ ]*\\([0-9][0-9]*\\).*/\\1/p' "
+      .. "| head -n " .. (MAX_RECORDS * 2) .. " | tr '\\n' ',')",
+    "tab=$(printf '\\t'); codex_probe=0",
+    "if [ \"$codex_on\" = 1 ]; then case \"$pane_data\" in "
+      .. "*\"${tab}codex${tab}\"*) codex_probe=1 ;; esac; fi",
+    "if [ \"$codex_probe\" = 1 ]; then "
+      .. "ps -eo pid=,ppid=,stat=,comm= 2>/dev/null; "
+      .. "else ps -o pid=,ppid= -p \"${pids}$$\" 2>/dev/null; fi",
   }, "; ")
 
   return tmux.capture("sh -c " .. tmux.quote(script) .. " 2>/dev/null")
 end
 
--- The full process table, used only when the cheap lookup leaves an agent
--- unaccounted for (a wrapper script, a shim, anything more than one hop).
+-- Used only when the targeted process listing finds a live pid whose ancestry
+-- stops before a pane (wrapper scripts and shims).
 function M.full_ancestry()
   return tmux.capture("ps -eo pid=,ppid= 2>/dev/null")
 end
 
 local function split_sections(raw)
-  local sections = { panes = {}, options = {}, clients = {}, procs = {}, sessions = {} }
+  local sections = {
+    panes = {}, options = {}, clients = {}, procs = {}, sessions = {},
+    claude_sessions = {}, codex_sessions = {}, sources = {},
+  }
   local current
-
-  for line in raw:gmatch("[^\n]+") do
-    local marker = line:match("^#(%a+)$")
+  for line in tostring(raw):gmatch("[^\n]+") do
+    local marker = line:match("^#([%a_]+)$")
     if marker and sections[marker] then
       current = sections[marker]
     elseif current then
       current[#current + 1] = line
     end
   end
-
   return sections
 end
 
--- The @agent-tracker-* block out of the same read, for config to chew on.
 function M.options_text(raw)
   return table.concat(split_sections(raw).options, "\n")
 end
 
--- tmux runs a status line's #() once and shows the result to every client, so
--- the bar has to fit the narrowest one attached or it gets cut off there.
+function M.sources(raw)
+  local out = {}
+  for _, line in ipairs(split_sections(raw).sources) do
+    local provider, path, status = line:match("^([^\t]+)\t([^\t]*)\t([^\t]+)$")
+    if provider then out[provider] = { path = path, status = status } end
+  end
+  return out
+end
+
 function M.client_width(raw)
   local narrowest
   for _, line in ipairs(split_sections(raw).clients) do
     local width = tonumber(line:match("^%s*(%d+)"))
-    if width and (not narrowest or width < narrowest) then
-      narrowest = width
-    end
+    if width and (not narrowest or width < narrowest) then narrowest = width end
   end
   return narrowest
 end
 
--- The panes the attached clients are actually sitting in, as a set. A detached
--- session has no client, so nothing in it counts as looked at.
 function M.active_panes(raw)
   local active = {}
   for _, line in ipairs(split_sections(raw).clients) do
@@ -118,21 +208,29 @@ function M.active_panes(raw)
   return active
 end
 
--- The two space-bearing fields sit at the end, split by the tab. A line with no
--- tab at all is still accepted so an older format string keeps parsing.
 local function parse_panes(lines)
   local by_pid = {}
   for _, line in ipairs(lines) do
     local pid, pane, window_index, pane_index, rest =
       line:match("^(%d+) (%%%d+) (%d+) (%d+) (.*)$")
     if pid then
-      local session, custom = rest:match("^([^\t]*)\t(.*)$")
+      -- The controlled fields are taken from the end so a user-entered custom
+      -- name can still contain tabs without shifting command/path discovery.
+      local session, custom, custom_session, current_command, current_path =
+        rest:match("^([^\t]*)\t(.*)\t([^\t]*)\t([^\t]*)\t([^\t]*)$")
+      if not session then
+        session, custom, custom_session = rest:match("^([^\t]*)\t(.*)\t([^\t]*)$")
+      end
+      if not session then session, custom = rest:match("^([^\t]*)\t(.*)$") end
       by_pid[tonumber(pid)] = {
         pane = pane,
         window_index = tonumber(window_index),
         pane_index = tonumber(pane_index),
         session = session or rest,
         custom = custom ~= "" and custom or nil,
+        custom_session = custom_session ~= "" and custom_session or nil,
+        current_command = current_command ~= "" and current_command or nil,
+        current_path = current_path ~= "" and current_path or nil,
       }
     end
   end
@@ -140,15 +238,20 @@ local function parse_panes(lines)
 end
 
 local function parse_procs(lines)
-  local parent = {}
+  local parent, detail = {}, {}
   for _, line in ipairs(lines) do
-    local pid, ppid = line:match("^%s*(%d+)%s+(%d+)%s*$")
-    if pid then parent[tonumber(pid)] = tonumber(ppid) end
+    local pid, ppid, state, comm =
+      line:match("^%s*(%d+)%s+(%d+)%s+(%S+)%s+(%S+)%s*$")
+    if not pid then pid, ppid = line:match("^%s*(%d+)%s+(%d+)%s*$") end
+    if pid then
+      pid, ppid = tonumber(pid), tonumber(ppid)
+      parent[pid] = ppid
+      if state and comm then detail[pid] = { state = state, comm = comm } end
+    end
   end
-  return parent
+  return parent, detail
 end
 
--- Climb from an agent's pid until we hit a pid that owns a pane.
 function M.resolve_pane(pid, parent, panes_by_pid)
   local at, hops = pid, 0
   while at and at > 1 and hops < MAX_ANCESTRY_HOPS do
@@ -160,103 +263,164 @@ function M.resolve_pane(pid, parent, panes_by_pid)
   return nil
 end
 
-local function basename(path)
-  return (tostring(path):gsub("/+$", ""):match("([^/]+)$")) or path
+local function identity(agent)
+  return table.concat({ agent.provider or "", agent.session_id or "", tostring(agent.pid or 0) }, ":")
 end
 
--- Newest wins when two session files land on the same pane, which happens
--- briefly when an agent is restarted in place.
-local function newer(a, b)
-  return (a.updated_at or 0) > (b.updated_at or 0)
+-- A rename belongs to a provider session, not to the tmux pane that happens to
+-- host it. Providers without a stable session id fall back to their root pid;
+-- that still prevents a replacement process in the same pane inheriting it.
+function M.session_key(agent)
+  local provider = agent.provider or "agent"
+  if type(agent.session_id) == "string" and agent.session_id ~= "" then
+    return provider .. ":" .. agent.session_id
+  end
+  return provider .. ":pid:" .. tostring(agent.pid or 0)
 end
 
--- `deepen` is optional and only called if the cheap process listing left an
--- agent unresolved; leaving it out keeps this function pure for the tests.
+local function preferred(a, b)
+  local a_time, b_time = a.updated_at or 0, b.updated_at or 0
+  if a_time ~= b_time then return a_time > b_time end
+  return identity(a) > identity(b)
+end
+
+local function metadata()
+  return {
+    sources = {
+      claude = { records = 0, valid = 0, invalid = 0, stale = 0 },
+      codex = { records = 0, valid = 0, invalid = 0, stale = 0, discovered = 0 },
+    },
+    providers = { claude = 0, codex = 0 },
+  }
+end
+
+-- `deepen` is optional and called at most once when the cheap process listing
+-- contains a live record pid but not enough ancestors to place it.
 function M.parse(raw, deepen)
   local sections = split_sections(raw)
   local panes_by_pid = parse_panes(sections.panes)
-  local parent = parse_procs(sections.procs)
-
+  local parent, process_detail = parse_procs(sections.procs)
+  local meta = metadata()
   local records, unresolved = {}, false
-  for _, line in ipairs(sections.sessions) do
-    local record = json.decode(line)
-    -- Background jobs are real sessions but they have no pane of their own, so
-    -- there is nowhere to jump to. Skip them rather than show a dead entry.
-    if type(record) == "table" and record.pid and record.kind ~= "bg" then
-      records[#records + 1] = record
-      -- A pid missing from the listing altogether is simply dead — its session
-      -- file outlived it — and no amount of extra looking will place it. Only a
-      -- pid that is alive but whose chain stops short is worth a second query,
-      -- otherwise every stale file on disk would drag in a full ps every tick.
-      if parent[record.pid] and not M.resolve_pane(record.pid, parent, panes_by_pid) then
-        unresolved = true
+
+  local function decode(lines, provider, adapter)
+    for _, line in ipairs(lines) do
+      local stats = meta.sources[provider]
+      stats.records = stats.records + 1
+      local record, reason = adapter.decode(line)
+      if record then
+        records[#records + 1] = record
+        if parent[record.pid] and not M.resolve_pane(record.pid, parent, panes_by_pid) then
+          unresolved = true
+        end
+      elseif reason ~= "background" then
+        stats.invalid = stats.invalid + 1
       end
     end
   end
 
-  -- Someone is running claude behind a wrapper, or has since exited. One full
-  -- process listing tells us which, and it only happens when it has to.
-  if unresolved and deepen then
+  -- #sessions is the original Claude-only seam retained for fixtures and
+  -- callers; production records now have an explicit provider section.
+  decode(sections.sessions, "claude", claude)
+  decode(sections.claude_sessions, "claude", claude)
+  decode(sections.codex_sessions, "codex", codex)
+
+  -- A Codex foreground probe already supplied the complete table. Do not pay
+  -- for the legacy wrapper fallback a second time in that branch.
+  if unresolved and deepen and next(process_detail) == nil then
     for pid, ppid in tostring(deepen()):gmatch("(%d+)%s+(%d+)") do
       parent[tonumber(pid)] = tonumber(ppid)
     end
   end
 
   local by_pane = {}
-  for _, record in ipairs(records) do
-    local pane = M.resolve_pane(record.pid, parent, panes_by_pid)
-    if pane then
-      local agent = {
-        pid = record.pid,
-        session_id = record.sessionId,
-        name = record.name or "claude",
-        -- What `rename` put on the pane, if anything. Wins over the reported
-        -- task name everywhere a name is drawn.
-        custom = pane.custom,
-        status = record.status or "unknown",
-        waiting_for = record.waitingFor,
-        cwd = record.cwd or "",
-        dir = basename(record.cwd or ""),
-        version = record.version,
-        updated_at = tonumber(record.statusUpdatedAt) or tonumber(record.updatedAt) or 0,
-        pane = pane.pane,
-        session = pane.session,
-        window_index = pane.window_index,
-        pane_index = pane.pane_index,
-      }
+  local function attach(agent, pane)
+    agent.session_key = M.session_key(agent)
+    agent.custom = pane.custom_session == agent.session_key and pane.custom or nil
+    agent.stale_custom = (pane.custom ~= nil or pane.custom_session ~= nil)
+      and agent.custom == nil
+    agent.pane = pane.pane
+    agent.session = pane.session
+    agent.window_index = pane.window_index
+    agent.pane_index = pane.pane_index
+    agent.recorded_pane = nil
+  end
+
+  for _, agent in ipairs(records) do
+    local pane = M.resolve_pane(agent.pid, parent, panes_by_pid)
+    local process = process_detail[agent.pid]
+    local foreground = not process
+      or tostring(process.state):find("+", 1, true) ~= nil
+    if pane and (not agent.recorded_pane or agent.recorded_pane == pane.pane)
+        and (agent.provider ~= "codex" or foreground) then
+      meta.sources[agent.provider].valid = meta.sources[agent.provider].valid + 1
+      attach(agent, pane)
+
       local existing = by_pane[pane.pane]
-      if not existing or newer(agent, existing) then
-        by_pane[pane.pane] = agent
-      end
+      if not existing or preferred(agent, existing) then by_pane[pane.pane] = agent end
+    else
+      meta.sources[agent.provider].stale = meta.sources[agent.provider].stale + 1
     end
   end
 
-  local agents = {}
-  for _, agent in pairs(by_pane) do
-    agents[#agents + 1] = agent
+  -- Codex 0.146 can defer SessionStart until the first submitted prompt. A
+  -- foreground native codex process establishes presence and pane ownership,
+  -- but not lifecycle status, so expose it as provisional/unknown. Hook records
+  -- remain authoritative and always win this per-pane merge.
+  local provisional = {}
+  for pid, process in pairs(process_detail) do
+    local command = tostring(process.comm):gsub("/+$", ""):match("([^/]+)$")
+    local foreground = tostring(process.state):find("+", 1, true) ~= nil
+    if foreground and command and command:lower() == "codex" then
+      local pane = M.resolve_pane(pid, parent, panes_by_pid)
+      if pane and tostring(pane.current_command):lower() == "codex"
+          and not by_pane[pane.pane] then
+        local existing = provisional[pane.pane]
+        if not existing or pid > existing.pid then
+          local cwd = pane.current_path or ""
+          provisional[pane.pane] = {
+            provider = "codex",
+            pid = pid,
+            status = "unknown",
+            cwd = cwd,
+            dir = cwd:gsub("/+$", ""):match("([^/]+)$") or cwd,
+            updated_at = 0,
+            provisional = true,
+            pane_info = pane,
+          }
+        end
+      end
+    end
+  end
+  for pane_id, agent in pairs(provisional) do
+    attach(agent, agent.pane_info)
+    agent.pane_info = nil
+    by_pane[pane_id] = agent
+    meta.sources.codex.discovered = meta.sources.codex.discovered + 1
   end
 
-  -- Stable ordering is what makes "agent 3" mean the same agent five minutes
-  -- from now: sort by where the pane is, never by status or activity.
-  table.sort(agents, function(a, b)
+  local list = {}
+  for _, agent in pairs(by_pane) do list[#list + 1] = agent end
+  table.sort(list, function(a, b)
     if a.session ~= b.session then return a.session < b.session end
     if a.window_index ~= b.window_index then return a.window_index < b.window_index end
-    return a.pane_index < b.pane_index
+    if a.pane_index ~= b.pane_index then return a.pane_index < b.pane_index end
+    return identity(a) < identity(b)
   end)
 
-  for position, agent in ipairs(agents) do
-    agent.index = position
+  for index, agent in ipairs(list) do
+    agent.index = index
+    meta.providers[agent.provider] = (meta.providers[agent.provider] or 0) + 1
   end
-
-  return agents
+  return list, meta
 end
 
-function M.list(sessions_dir)
-  return M.parse(M.gather(sessions_dir), M.full_ancestry)
+function M.list(overrides)
+  return M.parse(M.gather(overrides), M.full_ancestry)
 end
 
-function M.find(agents, pane)
-  for _, agent in ipairs(agents) do
+function M.find(list, pane)
+  for _, agent in ipairs(list) do
     if agent.pane == pane then return agent end
   end
   return nil

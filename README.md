@@ -3,8 +3,8 @@
 [![tests](https://github.com/ulas96/tmux-agent-tracker/actions/workflows/tests.yml/badge.svg)](https://github.com/ulas96/tmux-agent-tracker/actions/workflows/tests.yml)
 [![MIT licence](https://img.shields.io/github/license/ulas96/tmux-agent-tracker)](LICENSE)
 
-Keep an eye on every Claude Code session you have running, without going to look
-for them.
+Keep an eye on every Claude Code and Codex CLI session you have running, without
+going to look for them.
 
 <!-- Record a demo, drop it at docs/demo.gif, and uncomment:
 ![tmux-agent-tracker](docs/demo.gif)
@@ -25,17 +25,17 @@ you are sitting in is checked off, so orange means "this one has something you
 have not read". Set it working again and it goes back to orange when it next
 finishes.
 
-Every Claude pane also gets a numbered badge on its bottom border, so you can
+Every tracked pane also gets a numbered badge on its bottom border, so you can
 see which agent is which. Then jump straight to whichever one needs you —
 `prefix + Q` goes to the next agent that is waiting, `prefix + A 3` to the third.
 
 ```
 ┌──────────────────────┬──────────────────────┐
-│ nvim                 │ claude               │
+│ nvim                 │ codex                │
 │                      │                      │
 └─ 0 nvim ─────────────┴─ ✳¹ᵠ salt-data-lake ─┘
 ┌──────────────────────┬──────────────────────┐
-│ claude               │ claude               │
+│ claude               │ codex                │
 └─ ✳²ᶜ luima ──────────┴─ ✳³ erp ─────────────┘
 ```
 
@@ -52,7 +52,7 @@ between them:
 ```
  session │ 1:erp 2:luima 3:kal │ 14:32          <- your theme, at the top
 ┌──────────────────────┬──────────────────────┐
-│ claude               │ claude               │
+│ claude               │ codex                │
 └─ ✳¹ᵠ luima ──────────┴─ ✳²ᶜ erp ────────────┘
  five-salt-gradesᵠ  luima-securityᶜ  kal-b6ᶜ    <- the agent bar, last row
 ```
@@ -97,24 +97,37 @@ under every other pane goes away, the bar pane's border stays.
 
 ## How it knows
 
-Claude Code writes a small JSON file per running process to
-`~/.claude/sessions/<pid>.json`, containing its status, the task name and the
-working directory:
+| Provider | Discovery | Scope |
+|---|---|---|
+| Claude Code | native `~/.claude/sessions/<pid>.json` records | interactive tmux panes; automatic |
+| Codex CLI | foreground process for immediate presence; trusted hooks for lifecycle state | local interactive CLI in tmux; presence automatic, state opt-in |
+
+Claude Code writes a small JSON file per running process containing its status,
+task name and working directory:
 
 ```json
 {"pid":40050,"cwd":"/Users/you/kal","name":"kal-b6","status":"idle", ...}
 ```
 
-The plugin reads those, walks up the process tree from each pid until it reaches
-a pane, and draws what it finds. `status` is `waiting`, `idle` or `busy`, which
-is exactly the three things worth knowing. Whether you have looked at a finished
-one is the plugin's own bookkeeping — which pane each attached client is in,
-noted once a second and kept in a tmux option, so it is forgotten when the server
-dies.
+Codex does not expose an equivalent stable status file. Its documented
+lifecycle hooks call the bundled bridge, which stores only provider, session id,
+PID, tmux pane id, cwd, normalized status and a Unix-seconds update timestamp. It never reads
+or stores prompts, assistant messages, tool inputs/results, transcripts,
+credentials or environment dumps.
 
-Nothing is installed into Claude Code — no hooks, no changes to `settings.json`.
-If an agent exits, its pid stops resolving to a pane and it drops off the roster
-on its own.
+Some Codex CLI startup paths defer `SessionStart` until the first prompt. A
+brand-new foreground `codex` process therefore appears immediately as a gray
+unknown entry; its first trusted hook event replaces that provisional presence
+with real busy, waiting or complete state.
+
+The poll reads both sources in one bounded gathering pass, walks each PID up the
+process tree to its tmux pane, merges the records and draws one roster. A dead PID
+or a Codex record whose ancestry no longer reaches its recorded pane is dropped;
+mtime is not treated as proof of life.
+
+Nothing is installed into Claude Code. Immediate Codex presence is automatic;
+lifecycle-state setup is opt-in because Codex asks you to review and trust
+non-managed hooks.
 
 ## Install
 
@@ -145,6 +158,42 @@ your `tmux.conf` lives. Paths below use the second; substitute if yours differ.
 
 [INTEGRATION.md](INTEGRATION.md) is the step by step version, with a check after
 each one and a troubleshooting section keyed to them.
+
+### Enable Codex CLI tracking
+
+The tmux plugin never edits Codex configuration at startup. Print the current,
+absolute hook definition explicitly:
+
+```sh
+tracker=~/.config/tmux/plugins/tmux-agent-tracker/bin/tmux-agent-tracker
+"$tracker" codex-hook-config > /tmp/tmux-agent-tracker-hooks.json
+```
+
+Review that file, then either install it as `~/.codex/hooks.json` when no hook
+file exists, or merge its seven event groups into the existing top-level
+`hooks` object. Do not replace unrelated hooks. Re-running the merge must keep
+only one tracker handler per event. Start/restart Codex, open `/hooks`, inspect
+the source and exact command, and trust it; untrusted hooks are skipped.
+This follows Codex's current [lifecycle hooks documentation](https://learn.chatgpt.com/docs/hooks).
+
+The bridge covers `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+`PermissionRequest`, `PostToolUse`, `Stop` and `SessionEnd`. Codex records use
+`idle` for a stopped turn, which renders through the existing finished/unread
+behavior. Approval waiting is best-effort: `PermissionRequest` is tracked, but
+other UI-specific questions may not emit that event.
+
+An unprompted new Codex TUI is still shown immediately with the gray `·` state.
+That entry is process-backed and provisional until Codex emits its first hook.
+
+To disable tracking without deleting state:
+
+```tmux
+set -g @agent-tracker-providers 'claude'
+```
+
+To uninstall the bridge, disable/remove only the exact tracker entries shown by
+`/hooks`, then remove its state directory after Codex sessions have exited. The
+default is `${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/tmux-agent-tracker-${UID}/codex`.
 
 ## Keys
 
@@ -184,10 +233,14 @@ Ghostty `macos-option-as-alt = left`; iTerm2 → Profiles → Keys → Left Opti
 | `R` | redraw now | stays |
 | `Escape` | leave | |
 
-`r` opens a prompt with the current name in it. What you type replaces the task
-name Claude reported, on the bar and on the pane border both; submitting it
-empty hands the reported name back. The name lives on the pane, so it goes away
-when the pane does.
+`r` opens a prompt with the current name in it. What you type becomes the name
+on the bar and pane border; submitting it empty hands naming back to the
+provider. The override is tagged with the current agent session, so closing an
+agent and starting another in the same pane cannot carry the old name across.
+
+Without an override, the bar uses the chat name reported by the provider. If the
+provider has no chat name, as with the current Codex hook data, it uses the
+working folder's name instead.
 
 Keys you press repeatedly to hunt through the roster keep agent mode active.
 Keys that land you somewhere you are about to type in drop out of it, so your
@@ -231,6 +284,9 @@ set -g @agent-tracker-bar-separator '  '
 
 set -g @agent-tracker-max '0'                 # 0 = every live agent; N caps it
 set -g @agent-tracker-interval '1'            # seconds
+set -g @agent-tracker-providers 'claude,codex'
+set -g @agent-tracker-claude-sessions-dir ''  # specific option; empty uses legacy below
+set -g @agent-tracker-codex-state-dir ''      # empty = secure per-user runtime default
 
 set -g @agent-tracker-keys 'on'
 set -g @agent-tracker-follow 'on'             # tmux pane moves change the selection
@@ -239,7 +295,14 @@ set -g @agent-tracker-bar 'on'                # the dedicated status line
 set -g @agent-tracker-bottom-bar 'off'        # or the window's last row instead
 set -g @agent-tracker-status-position 'off'   # 'off' keeps yours; or 'top'/'bottom'
 set -g @agent-tracker-alert 'off'             # message when an agent starts waiting
-set -g @agent-tracker-sessions-dir '~/.claude/sessions'
+set -g @agent-tracker-sessions-dir '~/.claude/sessions'  # legacy Claude alias
+```
+
+If you override `codex-state-dir`, regenerate the hook definition with the same
+absolute path so writer and poll agree:
+
+```sh
+"$tracker" codex-hook-config /absolute/private/state-dir
 ```
 
 Plain letters instead of superscripts, if your font is unhappy:
@@ -316,9 +379,11 @@ The defaults are Catppuccin Mocha, so it drops in without further colour work.
 ~/.config/tmux/plugins/tmux-agent-tracker/bin/tmux-agent-tracker doctor
 ```
 
-prints the Lua and tmux it found, where it is looking, and every agent it can
-see. If the list is empty, the usual reasons are that Claude Code is running
-outside tmux, or that `~/.claude/sessions` is somewhere else.
+prints provider readiness, secure-source counts, and every live pane-backed
+agent it can see. For Claude, an empty list usually means it is outside tmux or
+the sessions directory moved. For Codex, `live provisional` confirms a blank TUI
+was found before its first hook; otherwise check `/hooks` trust, that the CLI is
+inside tmux, and that `codex state` is not reported as insecure.
 
 No second status line at all usually means a theme loaded after this plugin and
 set `status` back to `on`. Load this plugin last.
@@ -329,10 +394,10 @@ set `status` back to `on`. Load this plugin last.
 lua tests/run.lua
 ```
 
-No framework, just asserts. They cover the JSON decoding, the process-tree walk,
-roster ordering, badge rendering and the navigation arithmetic, and they run
-under 5.1 through 5.5. CI checks 5.1 through 5.4 and LuaJIT on Ubuntu; 5.5 is
-checked locally until it reaches the stable runner image.
+No framework, just asserts. They cover the JSON codec, both provider adapters,
+hook transitions and PID matching, process-tree merging, roster ordering, badge
+rendering and navigation arithmetic, and run under Lua 5.1 through 5.5 plus
+LuaJIT.
 
 ## Licence
 
