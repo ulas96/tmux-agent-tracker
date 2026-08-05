@@ -1,0 +1,24 @@
+#!/bin/sh
+# Find a Lua interpreter and hand over. Set AGENT_TRACKER_LUA to pin a specific
+# one; otherwise the first of these on PATH wins.
+set -e
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+lua=${AGENT_TRACKER_LUA:-}
+if [ -z "$lua" ]; then
+  for candidate in lua lua5.4 lua5.3 lua5.2 lua5.1 luajit; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      lua=$candidate
+      break
+    fi
+  done
+fi
+
+if [ -z "$lua" ]; then
+  echo "tmux-agent-tracker: no lua interpreter found." >&2
+  echo "install one (brew install lua, apt install lua5.4) or set AGENT_TRACKER_LUA." >&2
+  exit 127
+fi
+
+exec "$lua" "$root/lua/main.lua" "$@"
