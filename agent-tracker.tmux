@@ -50,15 +50,20 @@ fi
 # Unless bottom-bar is on, in which case the bar lives on the last row of the
 # window instead and the status line only has to keep the poll ticking.
 if enabled bottom-bar off; then
-  # An invisible #() on the theme's own line: the poll has to be driven by
-  # something tmux refreshes, and this is the only thing left once the bar has
-  # moved off the status line. It prints nothing.
+  # The poll still has to be driven by something tmux refreshes on a timer, and
+  # with the bar down on a pane border the status line is all that is left. This
+  # prints nothing, so it costs the theme no room.
   #
-  # Unset before appending, or every reload of tmux.conf leaves another copy
-  # behind and the poll runs once more per second than it did before.
-  tmux set-option -gu 'status-format[0]'
-  tmux set-option -gqa 'status-format[0]' "#($tracker status)"
+  # It hangs off status-right and not status-format, because status-format is an
+  # array: unsetting an element removes it rather than restoring the default, and
+  # tmux will not tell you what that default was — which leaves the whole top bar
+  # blank with no way to put it back.
   tmux set-option -g status on
+  tmux set-option -gu 'status-format[1]'
+  case "$(tmux show-option -gv status-right)" in
+    *"$tracker status"*) ;;   # already appended on an earlier load
+    *) tmux set-option -ga status-right "#($tracker status)" ;;
+  esac
 elif enabled bar on; then
   tmux set-option -g status 2
   # Line 0 is left exactly as the theme built it.
@@ -108,8 +113,12 @@ if enabled keys on; then
   # stock tmux — select-window, next-window, choose-tree, zoom — and taking
   # them would cost more than it gains. C is left alone too (customize-mode),
   # so "next finished agent" is F.
-  tmux bind-key -n M-a $stay                       # enter agent mode, no prefix
-  tmux bind-key A $stay                            # ...or via the prefix
+  # M-a is a prefix of its own: it opens the agent table, where a single key is
+  # the whole command (M-a n, M-a 1). prefix + a does the same, for terminals
+  # that swallow Meta.
+  tmux bind-key -n M-a $stay
+  tmux bind-key a $stay
+  tmux bind-key A $stay
   tmux bind-key N $run "$tracker next"             # next agent, and follow
   tmux bind-key P $run "$tracker prev"             # previous agent, and follow
   tmux bind-key W $run "$tracker focus"            # back to the selected agent
@@ -132,6 +141,9 @@ if enabled keys on; then
   tmux bind-key -T agent w $run "$tracker focus"
   tmux bind-key -T agent z $run "$tracker zoom"
   tmux bind-key -T agent l run-shell "$tracker menu"
+  # Not backgrounded: both of these open a prompt or a menu, which needs the
+  # client run-shell is attached to.
+  tmux bind-key -T agent r run-shell "$tracker rename"
 
   # The separator has to reach tmux as the literal two characters \; — a bare
   # `;` would be eaten by tmux's own parser as the end of the bind-key command,
@@ -142,7 +154,7 @@ if enabled keys on; then
   tmux bind-key -T agent q $run "$tracker waiting" "$sep" $stay
   tmux bind-key -T agent c $run "$tracker complete" "$sep" $stay
   tmux bind-key -T agent Tab $run "$tracker last" "$sep" $stay
-  tmux bind-key -T agent r $run "$tracker refresh" "$sep" $stay
+  tmux bind-key -T agent R $run "$tracker refresh" "$sep" $stay
 
   tmux bind-key -T agent Escape display-message "agent mode off"
 fi

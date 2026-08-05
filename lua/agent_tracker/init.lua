@@ -11,6 +11,7 @@ local M = {}
 
 local BADGE = "@agent_badge"
 local LABEL = "@agent_label"
+local NAME = "@agent_name"
 local BAR_TEXT = "@agent_bar_text"
 local TRACKED = "@agent-tracker-panes"
 local SEEN = "@agent-tracker-seen"
@@ -202,6 +203,48 @@ function commands.refresh()
   refresh_status()
 end
 
+-- Renaming happens in two hops because the name has to come from a tmux prompt:
+-- `rename` opens it, the prompt's template calls `rename-to` with what was
+-- typed. Neither hop carries the pane id — the target is whatever is selected,
+-- and the selection cannot move while the prompt has the keyboard.
+--
+-- The template says %% and nothing else with a % in it: tmux substitutes %1..%9
+-- there too, which would chew a pane id like %19 in half.
+function commands.rename()
+  local list, opts = load()
+  local agent = nav.current(list)
+  if not agent then
+    tmux.tmux("display-message " .. tmux.quote("no claude agents running"))
+    return
+  end
+
+  -- ponytail: a name containing a single quote breaks the template's quoting and
+  -- the rename is dropped. Pass the text through a tmux option instead of a
+  -- shell command if that ever matters.
+  local template = "run-shell " .. tmux.quote(nav.script() .. ' rename-to "%%"')
+  tmux.tmux(table.concat({
+    "command-prompt",
+    "-I " .. tmux.quote(render.bar_name(agent, opts)),
+    "-p " .. tmux.quote("rename agent " .. agent.index .. ":"),
+    tmux.quote(template),
+  }, " "))
+end
+
+-- Empty input clears the override and hands the agent back its reported task
+-- name, so there is no separate "unrename".
+commands["rename-to"] = function(name)
+  local list = load()
+  local agent = nav.current(list)
+  if not agent then return end
+
+  if name and name ~= "" then
+    tmux.batch({ tmux.set_pane_option(agent.pane, NAME, name) })
+  else
+    tmux.batch({ tmux.unset_pane_option(agent.pane, NAME) })
+  end
+  refresh_status()
+end
+
 -- Put a bar pane on every window that is missing one, or has had one shoved out
 -- of place by a layout change. Safe to call repeatedly; the layout hook does.
 function commands.ensure()
@@ -245,7 +288,7 @@ function M.run(argv)
   local handler = commands[name] or commands[name .. "_"]
   if not handler then
     io.stderr:write("tmux-agent-tracker: unknown command '" .. name .. "'\n")
-    io.stderr:write("commands: status roster list goto next prev focus zoom waiting complete last menu refresh ensure teardown doctor\n")
+    io.stderr:write("commands: status roster list goto next prev focus zoom waiting complete last menu rename rename-to refresh ensure teardown doctor\n")
     return 1
   end
   handler(argv[2])

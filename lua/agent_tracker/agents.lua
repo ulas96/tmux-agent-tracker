@@ -34,8 +34,13 @@ function M.gather(sessions_dir)
   local script = table.concat({
     resolve,
     "printf '#panes\\n'",
+    -- Two of these fields can contain spaces, so a tab separates them: session
+    -- names are tmux's to police, and @agent_name is whatever the user typed at
+    -- the rename prompt.
     "tmux list-panes -a -F "
-      .. tmux.quote("#{pane_pid} #{pane_id} #{window_index} #{pane_index} #{session_name}"),
+      .. tmux.quote(
+        "#{pane_pid} #{pane_id} #{window_index} #{pane_index} #{session_name}\t#{@agent_name}"
+      ),
     "printf '#options\\n'",
     "tmux show-options -g",
     "printf '#clients\\n'",
@@ -98,19 +103,21 @@ function M.client_width(raw)
   return narrowest
 end
 
--- session_name is last in the format string because it is the only field that
--- can contain spaces.
+-- The two space-bearing fields sit at the end, split by the tab. A line with no
+-- tab at all is still accepted so an older format string keeps parsing.
 local function parse_panes(lines)
   local by_pid = {}
   for _, line in ipairs(lines) do
-    local pid, pane, window_index, pane_index, session =
+    local pid, pane, window_index, pane_index, rest =
       line:match("^(%d+) (%%%d+) (%d+) (%d+) (.*)$")
     if pid then
+      local session, custom = rest:match("^([^\t]*)\t(.*)$")
       by_pid[tonumber(pid)] = {
         pane = pane,
         window_index = tonumber(window_index),
         pane_index = tonumber(pane_index),
-        session = session,
+        session = session or rest,
+        custom = custom ~= "" and custom or nil,
       }
     end
   end
@@ -188,6 +195,9 @@ function M.parse(raw, deepen)
         pid = record.pid,
         session_id = record.sessionId,
         name = record.name or "claude",
+        -- What `rename` put on the pane, if anything. Wins over the reported
+        -- task name everywhere a name is drawn.
+        custom = pane.custom,
         status = record.status or "unknown",
         waiting_for = record.waitingFor,
         cwd = record.cwd or "",

@@ -37,7 +37,9 @@ M.defaults = {
   ["bar-separator"] = "  ",
 
   -- behaviour
-  ["max"] = "9",
+  -- Every live agent goes on the bar; the names shrink to make room rather than
+  -- the ones on the end vanishing. Set a number to cap it again.
+  ["max"] = "0",
   ["interval"] = "1",
   ["sessions-dir"] = "~/.claude/sessions",
 

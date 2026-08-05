@@ -234,6 +234,51 @@ do
   local narrow = render.bar(roster, opts, 0, nil, 40):gsub("#%[[^%]]*%]", "")
   local count = select(2, narrow:gsub("[^\128-\191]", ""))
   check("fit: output fits the client width", count <= 40, "rendered " .. count .. " columns")
+
+  -- Once the names are at the floor the tail is counted instead of overflowing.
+  do
+    local many = {}
+    for index = 1, 30 do
+      many[index] = { index = index, name = "agent " .. index, dir = "d", status = "busy", pane = "%" .. index }
+    end
+    local uncapped = setmetatable({ max = 0 }, { __index = opts })
+    local crowded = render.bar(many, uncapped, 0, nil, 80):gsub("#%[[^%]]*%]", "")
+    local columns = select(2, crowded:gsub("[^\128-\191]", ""))
+    check("bar: crowded output still fits", columns <= 80, "rendered " .. columns .. " columns")
+    check("bar: the hidden tail is counted", crowded:find("%+%d+") ~= nil, crowded)
+  end
+end
+
+-- --- renaming ---------------------------------------------------------------
+
+do
+  local renamed = agents.parse(table.concat({
+    "#panes",
+    "3161 %1 1 0 work\tshipping api",   -- @agent_name set on the pane
+    "4051 %10 3 2 my session",          -- no tab at all: older format string
+    "#procs",
+    "  3161     1",
+    "  4051     1",
+    " 40050  3161",
+    " 44444  4051",
+    "#sessions",
+    '{"pid":40050,"cwd":"/Users/u/kal","name":"zk auth","status":"busy","kind":"interactive"}',
+    '{"pid":44444,"cwd":"/Users/u/luima","name":"trees","status":"busy","kind":"interactive"}',
+  }, "\n"))
+
+  -- Sorted by session name, so "my session" lands ahead of "work".
+  local named = agents.find(renamed, "%1")
+  local plain = agents.find(renamed, "%10")
+
+  equals("rename: custom name carried", named.custom, "shipping api")
+  equals("rename: session name still parses", named.session, "work")
+  check("rename: absent means nil", plain.custom == nil)
+  equals("rename: spaces in a session name survive", plain.session, "my session")
+
+  local opts = { bar_label = "name", bar_width = 20, label = "dir", label_width = 20 }
+  equals("rename: the bar shows it", render.bar_name(named, opts), "shipping api")
+  equals("rename: the pane border shows it", render.label(named, opts), "shipping api")
+  equals("rename: others keep the reported name", render.bar_name(plain, opts), "trees")
 end
 
 -- --- navigation -------------------------------------------------------------

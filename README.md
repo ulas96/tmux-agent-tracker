@@ -44,8 +44,10 @@ between them:
  five-salt-gradesᵠ  luima-securityᶜ  kal-b6ᶜ    <- the agent bar, last row
 ```
 
-Names shrink to fit: the bar sizes itself to the narrowest attached client, so
-the agent on the end never quietly falls off the edge.
+Every live session gets a slot. Names shrink to fit — the bar sizes itself to
+the narrowest attached client — and once they are as short as they usefully go,
+the remainder is counted as a `+3` on the end rather than quietly falling off
+the edge.
 
 By default your `status-position` is left alone and the agent bar goes directly
 next to your theme — the row under it at the top, or the last row at the bottom.
@@ -126,8 +128,8 @@ what tmux has always done — window switching, `choose-tree`, zoom,
 
 | Key | Does |
 |---|---|
-| `M-a` (opt/alt + a) | agent mode, no prefix needed — see below |
-| `prefix + A` | same thing, through the prefix |
+| `M-a` | agent mode, see below — its own prefix, no tmux prefix needed |
+| `prefix + a` | the same, for terminals that swallow Meta |
 | `prefix + N` / `P` | next / previous agent, and follow it |
 | `prefix + W` | back to the selected agent |
 | `prefix + Z` | back to it, zoomed |
@@ -135,13 +137,14 @@ what tmux has always done — window switching, `choose-tree`, zoom,
 | `prefix + F` | next **finished** agent |
 | `prefix + Tab` | flip between the last two |
 
-`M-a` enters agent mode, where the bare number keys are free — the only way to
-get `1`–`9` without taking `select-window` off the prefix. The status bar shows
-`agent` while it is active.
+`M-a` acts as a prefix of its own: press it, then one key is the whole command —
+`M-a n` for the next agent, `M-a 1` for the first. The bare number keys are free
+in there, which is the only way to get `1`–`9` without taking `select-window` off
+the tmux prefix. The status bar shows `agent` while it is active.
 
-On macOS, opt + a types `å` unless the terminal sends it as Meta: Terminal.app →
-Settings → Profiles → Keyboard → *Use Option as Meta key*; iTerm2 → Profiles →
-Keys → Left Option key → *Esc+*. Ghostty and Alacritty do it by default.
+On macOS the terminal has to send Option as Meta or `M-a` never reaches tmux:
+Ghostty `macos-option-as-alt = left`; iTerm2 → Profiles → Keys → Left Option →
+*Esc+*; Terminal.app → Profiles → Keyboard → *Use Option as Meta key*.
 
 | Key | Does | |
 |---|---|---|
@@ -151,8 +154,14 @@ Keys → Left Option key → *Esc+*. Ghostty and Alacritty do it by default.
 | `w` / `z` | go to selected / go and zoom | exits |
 | `l` | pick from a menu | exits |
 | `Tab` | last agent | stays |
-| `r` | redraw now | stays |
+| `r` | rename the selected agent | exits |
+| `R` | redraw now | stays |
 | `Escape` | leave | |
+
+`r` opens a prompt with the current name in it. What you type replaces the task
+name Claude reported, on the bar and on the pane border both; submitting it
+empty hands the reported name back. The name lives on the pane, so it goes away
+when the pane does.
 
 Keys you press repeatedly to hunt through the roster keep agent mode active.
 Keys that land you somewhere you are about to type in drop out of it, so your
@@ -181,7 +190,7 @@ set -g @agent-tracker-bar-label 'name'        # agent bar: name | dir | both
 set -g @agent-tracker-bar-width '18'          # a ceiling; names shrink to fit
 set -g @agent-tracker-bar-separator '  '
 
-set -g @agent-tracker-max '9'                 # bar length; the menu shows all
+set -g @agent-tracker-max '0'                 # 0 = every live agent; N caps it
 set -g @agent-tracker-interval '1'            # seconds
 
 set -g @agent-tracker-keys 'on'

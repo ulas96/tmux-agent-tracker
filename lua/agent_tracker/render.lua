@@ -91,7 +91,9 @@ end
 
 function M.label(agent, opts)
   local text
-  if opts.label == "name" then
+  if agent.custom then
+    text = agent.custom
+  elseif opts.label == "name" then
     text = agent.name
   elseif opts.label == "both" then
     text = agent.dir .. " " .. agent.name
@@ -133,9 +135,13 @@ function M.roster(agents, opts, frame, selected_pane)
   return table.concat(parts, " ")
 end
 
+-- A renamed agent keeps its name whatever bar-label says: you typed it, you
+-- meant it.
 function M.bar_name(agent, opts)
   local text
-  if opts.bar_label == "dir" then
+  if agent.custom then
+    text = agent.custom
+  elseif opts.bar_label == "dir" then
     text = agent.dir
   elseif opts.bar_label == "both" then
     text = agent.dir .. "/" .. agent.name
@@ -174,6 +180,13 @@ function M.fit(count, opts, avail)
   return each
 end
 
+-- How many entries of a given name width the line has room for. Only ever bites
+-- once fit() has hit the floor and there is no shrinking left to do.
+function M.capacity(width, opts, avail)
+  local each = width + 1 + #(opts.bar_separator or "  ")   -- name, glyph, gap
+  return math.max(math.floor((avail - RESERVE) / each), 1)
+end
+
 function M.bar(agents, opts, frame, selected_pane, avail)
   local shown = {}
   for _, agent in ipairs(agents) do
@@ -182,11 +195,28 @@ function M.bar(agents, opts, frame, selected_pane, avail)
   end
 
   local width = M.fit(#shown, opts, avail)
+
+  -- Past the floor the tail is counted rather than run off the edge, because a
+  -- bar that silently loses agents is worse than one that admits it.
+  local hidden = 0
+  if avail then
+    local room = M.capacity(width, opts, avail)
+    if #shown > room then
+      hidden = #shown - room
+      for position = #shown, room + 1, -1 do
+        shown[position] = nil
+      end
+    end
+  end
+
   local sized = setmetatable({ bar_width = width }, { __index = opts })
 
   local parts = {}
   for _, agent in ipairs(shown) do
     parts[#parts + 1] = M.bar_entry(agent, sized, frame, agent.pane == selected_pane)
+  end
+  if hidden > 0 then
+    parts[#parts + 1] = style(opts.colors.unknown) .. "+" .. hidden .. "#[default]"
   end
   return table.concat(parts, opts.bar_separator or "  ")
 end
@@ -202,7 +232,7 @@ function M.describe(agent, opts)
     opts.icon,
     symbol,
     where,
-    M.truncate(agent.name or "", 40),
+    M.truncate(agent.custom or agent.name or "", 40),
     detail
   )
 end
