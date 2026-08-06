@@ -130,9 +130,16 @@ if enabled bottom-bar off; then
   # that had only ever been started would never get a bar from these alone.
   # session-created and client-attached cover that; the poll covers everything
   # else, and all of them are cheap when there is nothing to do.
+  #
+  # Appended rather than set, for the same reason as after-select-pane below:
+  # these are popular hooks and replacing them silently breaks whatever else is
+  # on them. Appending needs the same guard, or every re-source stacks a copy.
   for hook in after-new-window window-layout-changed after-kill-pane \
               session-created client-attached; do
-    tmux set-hook -g "$hook" "run-shell -b '$tracker ensure'"
+    case "$(tmux show-hooks -g "$hook")" in
+      *"tmux-agent-tracker ensure"*) ;;
+      *) tmux set-hook -ga "$hook" "run-shell -b '$tracker ensure'" ;;
+    esac
   done
   tmux run-shell -b "$tracker ensure"
 fi

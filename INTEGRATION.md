@@ -699,6 +699,21 @@ anonymous. The poll adopts them by shape rather than building duplicates
 alongside, so this needs nothing from you. Nothing is written to the resurrect
 save that would confuse anything else.
 
+### Anything using the same tmux hooks
+
+Every hook the plugin wires is **appended**, never assigned: `after-select-pane`
+always, and with `bottom-bar on` also `after-new-window`,
+`window-layout-changed`, `after-kill-pane`, `session-created` and
+`client-attached`. Whatever you or another plugin already had on them keeps
+running. Each append is guarded, so re-sourcing your config does not stack
+copies.
+
+To see what is on one:
+
+```sh
+tmux show-hooks -g window-layout-changed
+```
+
 ### vim-tmux-navigator
 
 None. Its `C-h/j/k/l` are `select-pane`, and tmux's directional navigation skips
