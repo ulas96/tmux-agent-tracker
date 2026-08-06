@@ -934,6 +934,18 @@ do
   local bottombar = require("agent_tracker.bottombar")
 
   -- window pane top width height window_width zoomed mark
+  equals("lock: a private runtime directory is used as it is",
+    bottombar.lock_path({ XDG_RUNTIME_DIR = "/run/user/501/" }),
+    "/run/user/501/tmux-agent-tracker-ensure.lock")
+  equals("lock: TMPDIR is next, and is already per-user on macOS",
+    bottombar.lock_path({ TMPDIR = "/var/folders/ab/T" }),
+    "/var/folders/ab/T/tmux-agent-tracker-ensure.lock")
+  -- A fixed name in a shared /tmp is a neighbour's to take: mkdir is the lock,
+  -- so whoever creates it first keeps your bar off for the life of the server.
+  equals("lock: a shared /tmp is namespaced per user",
+    bottombar.lock_path({ USER = "ada" }),
+    "/tmp/tmux-agent-tracker-ada-ensure.lock")
+
   local windows = bottombar.parse(table.concat({
     "@1 %1 0 100 20 100 0 ",      -- ordinary pane
     "@1 %2 21 100 0 100 0 1",     -- a healthy bar: full width, lowest, no rows

@@ -98,9 +98,19 @@ end
 -- not enough on its own: several of them in flight at once would each look, all
 -- see no bar, and all make one. mkdir is the atomic test-and-set every unix
 -- has, so only one of them proceeds and the rest return immediately.
-local function lock_path()
-  local tmp = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
-  return tmp .. "/tmux-agent-tracker-ensure.lock"
+--
+-- Per user, not per machine. XDG_RUNTIME_DIR is already private on Linux and
+-- macOS gives every user their own TMPDIR; the bare /tmp fallback is the only
+-- one that has to carry a name, or a neighbour who creates the directory first
+-- keeps your bar switched off for the life of the server.
+function M.lock_path(env)
+  local get = env and function(key) return env[key] end or os.getenv
+  local runtime = get("XDG_RUNTIME_DIR") or get("TMPDIR")
+  if runtime and runtime ~= "" then
+    return (runtime:gsub("/+$", "")) .. "/tmux-agent-tracker-ensure.lock"
+  end
+  local user = get("USER") or get("LOGNAME") or ""
+  return "/tmp/tmux-agent-tracker-" .. user .. "-ensure.lock"
 end
 
 local function succeeded(ok, _, code)
@@ -108,7 +118,7 @@ local function succeeded(ok, _, code)
 end
 
 local function acquire()
-  local path = lock_path()
+  local path = M.lock_path()
   -- A run that was killed leaves the directory behind and would wedge this for
   -- good, so anything older than a minute is treated as abandoned.
   os.execute("find " .. tmux.quote(path) .. " -maxdepth 0 -mmin +1 -prune -exec rmdir {} + 2>/dev/null")
@@ -116,7 +126,7 @@ local function acquire()
 end
 
 local function release()
-  os.execute("rmdir " .. tmux.quote(lock_path()) .. " 2>/dev/null")
+  os.execute("rmdir " .. tmux.quote(M.lock_path()) .. " 2>/dev/null")
 end
 
 -- Worth doing anything about? Windows we would never touch don't count, so a
