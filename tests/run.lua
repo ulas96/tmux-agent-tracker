@@ -838,6 +838,18 @@ do
   equals("rename: unnamed replacement uses folder", render.bar_name(replacement, opts), "fresh")
 end
 
+-- The name typed at the rename prompt is user text, and tmux substitutes %%
+-- before it parses. Anything reaching a shell command reaches `sh` with it.
+do
+  local template = nav.rename_template("/opt/bin/tmux-agent-tracker")
+  check("rename: the typed name is staged in a tmux option",
+    template:find('set-option -gq @agent-tracker-rename-input "%%"', 1, true) ~= nil)
+  check("rename: nothing typed reaches a shell command",
+    not template:match("run%-shell.*$"):find("%%", 1, true))
+  check("rename: the callback carries no name argument",
+    template:find("rename-to'", 1, true) ~= nil)
+end
+
 -- --- navigation -------------------------------------------------------------
 
 -- nav reads the selection from tmux; stub that out so the maths is testable.

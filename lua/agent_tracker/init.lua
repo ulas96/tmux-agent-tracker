@@ -252,12 +252,9 @@ function commands.select(pane)
 end
 
 -- Renaming happens in two hops because the name has to come from a tmux prompt:
--- `rename` opens it, the prompt's template calls `rename-to` with what was
--- typed. Neither hop carries the pane id — the target is whatever is selected,
--- and the selection cannot move while the prompt has the keyboard.
---
--- The template says %% and nothing else with a % in it: tmux substitutes %1..%9
--- there too, which would chew a pane id like %19 in half.
+-- `rename` opens it, the prompt's template stages what was typed and calls
+-- `rename-to`. Neither hop carries the pane id — the target is whatever is
+-- selected, and the selection cannot move while the prompt has the keyboard.
 function commands.rename()
   local list, opts = load()
   local agent = nav.current(list)
@@ -266,37 +263,37 @@ function commands.rename()
     return
   end
 
-  -- ponytail: a name containing a single quote breaks the template's quoting and
-  -- the rename is dropped. Pass the text through a tmux option instead of a
-  -- shell command if that ever matters.
-  local template = "run-shell " .. tmux.quote(nav.script() .. ' rename-to "%%"')
   tmux.tmux(table.concat({
     "command-prompt",
     "-I " .. tmux.quote(render.bar_name(agent, opts)),
     "-p " .. tmux.quote("rename agent " .. agent.index .. ":"),
-    tmux.quote(template),
+    tmux.quote(nav.rename_template(nav.script())),
   }, " "))
 end
 
 -- Empty input clears the override and hands the agent back its reported chat
 -- name or directory fallback, so there is no separate "unrename".
+--
+-- The prompt leaves the name in a tmux option rather than passing it as an
+-- argument, so it never reaches a shell; an argument is still accepted for
+-- calling this by hand. The staging option is cleared either way, in the write
+-- the rename was going to cost anyway.
 commands["rename-to"] = function(name)
   local list = load()
-  local agent = nav.current(list)
-  if not agent then return end
+  if not name or name == "" then name = config.raw("rename-input") end
 
-  if name and name ~= "" then
-    tmux.batch({
-      tmux.set_pane_option(agent.pane, NAME, name),
-      tmux.set_pane_option(agent.pane, NAME_SESSION, agent.session_key),
-    })
-  else
-    tmux.batch({
-      tmux.unset_pane_option(agent.pane, NAME),
-      tmux.unset_pane_option(agent.pane, NAME_SESSION),
-    })
+  local agent = nav.current(list)
+  local writes = { tmux.set_global_option(nav.RENAME_INPUT, "") }
+  if agent and name and name ~= "" then
+    writes[#writes + 1] = tmux.set_pane_option(agent.pane, NAME, name)
+    writes[#writes + 1] = tmux.set_pane_option(agent.pane, NAME_SESSION, agent.session_key)
+  elseif agent then
+    writes[#writes + 1] = tmux.unset_pane_option(agent.pane, NAME)
+    writes[#writes + 1] = tmux.unset_pane_option(agent.pane, NAME_SESSION)
   end
-  refresh_status()
+
+  tmux.batch(writes)
+  if agent then refresh_status() end
 end
 
 -- Put a bar pane on every window that is missing one, or has had one shoved out

@@ -112,6 +112,24 @@ function M.script()
   return root and (root .. "/bin/tmux-agent-tracker") or "tmux-agent-tracker"
 end
 
+-- Where the rename prompt stages what was typed.
+M.RENAME_INPUT = "@agent-tracker-rename-input"
+
+-- The template the rename prompt runs when you press enter.
+--
+-- The typed name is staged in a tmux option rather than interpolated into the
+-- run-shell argument. tmux substitutes %% before parsing, so a name that lands
+-- inside a shell command reaches `sh`: `$(...)` in a rename would have run.
+-- Staged this way it never leaves tmux, and the worst a stray quote does is
+-- drop the rename.
+--
+-- The template says %% and nothing else with a % in it: tmux substitutes %1..%9
+-- there too, which would chew a pane id like %19 in half.
+function M.rename_template(script)
+  return "set-option -gq " .. M.RENAME_INPUT .. " \"%%\" ; run-shell "
+    .. tmux.quote(script .. " rename-to")
+end
+
 -- display-menu grew -s/-S/-H, and the menu-style options they override, in tmux
 -- 3.4. Below that they are not "ignored" — the whole command fails on the
 -- unknown flag and the picker never opens, which is worse than a stock-coloured

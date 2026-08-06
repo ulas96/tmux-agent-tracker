@@ -109,8 +109,12 @@ called from layout hooks that its own splitting fires, so it is guarded by a
 
 ## Conventions
 
-- Task names are user text that reaches `sh`, tmux menus and option values. Route
-  every interpolation through `tmux.quote()`.
+- Task names are user text. The rename prompt stages what was typed in a tmux
+  option (`nav.rename_template`) instead of interpolating it into a command, so
+  it never reaches `sh` — tmux substitutes `%%` before it parses, and a name
+  inside a `run-shell` argument would have run. Everything else that interpolates
+  user text (menus, option values, `display-message`) goes through
+  `tmux.quote()`.
 - Comments explain *why* a thing is shaped the way it is (fork counts, tmux
   quirks, ordering guarantees), not what the line does. Match that.
 - `ponytail:` comments mark deliberate shortcuts with their ceiling.
