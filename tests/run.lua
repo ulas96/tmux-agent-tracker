@@ -293,6 +293,11 @@ do
   end
 
   local target = state .. "/hook_file.json"
+  -- The gate everything else here depends on. `stat -f` is BSD-only and its GNU
+  -- and busybox namesake prints a filesystem dump before failing, so getting the
+  -- order wrong makes every write below a silent no-op on Linux.
+  check("hook dir: a fresh 0700 state directory is accepted",
+    codex_hook.secure_dir(state))
   check("hook file: SessionStart succeeds quietly",
     codex_hook.handle(payload("SessionStart"), env, { pid = 4242, now = 100 }))
   equals("hook file: SessionStart is idle", assert(json.decode(read(target))).status, "idle")
@@ -320,16 +325,32 @@ do
   local contents = read(target)
   check("hook file: prompt payload absent", not contents:find("private prompt", 1, true))
   check("hook file: tool payload absent", not contents:find("private command", 1, true))
-  local dir_mode = tmux_api.capture(
-    "stat -f %Lp " .. tmux_api.quote(state) .. " 2>/dev/null || stat -c %a "
-      .. tmux_api.quote(state) .. " 2>/dev/null"
-  ):match("(%d+)")
-  local file_mode = tmux_api.capture(
-    "stat -f %Lp " .. tmux_api.quote(target) .. " 2>/dev/null || stat -c %a "
-      .. tmux_api.quote(target) .. " 2>/dev/null"
-  ):match("(%d+)")
+  -- GNU form first: its BSD counterpart fails quietly, where `stat -f %Lp` on
+  -- GNU/busybox prints a whole filesystem dump before exiting non-zero.
+  local function mode_of(path)
+    return tmux_api.capture(
+      "stat -c %a " .. tmux_api.quote(path) .. " 2>/dev/null || stat -f %Lp "
+        .. tmux_api.quote(path) .. " 2>/dev/null"
+    ):match("(%d+)")
+  end
+  local dir_mode = mode_of(state)
+  local file_mode = mode_of(target)
   equals("hook file: directory mode", dir_mode, "700")
   equals("hook file: record mode", file_mode, "600")
+
+  -- PreToolUse and PostToolUse fire twice per tool call, inside the turn the
+  -- user is waiting on, so they must not pay for a process table. The pid comes
+  -- back out of the record instead — except on SessionStart, which is the event
+  -- a resumed session fires and the one moment the pid behind an id can move.
+  local elsewhere = "9000 8000 sh sh\n8000 1 codex /usr/bin/codex\n"
+  check("hook pid: a mid-session event still writes", codex_hook.handle(
+    payload("Stop"), env, { process_text = elsewhere, now = 130 }))
+  equals("hook pid: and reuses the recorded pid rather than rediscovering",
+    assert(json.decode(read(target))).pid, 4242)
+  check("hook pid: SessionStart rediscovers", codex_hook.handle(
+    payload("SessionStart"), env, { process_text = elsewhere, now = 131 }))
+  equals("hook pid: so a resumed session picks up its new process",
+    assert(json.decode(read(target))).pid, 8000)
 
   check("hook file: missing TMUX_PANE is a no-op", codex_hook.handle(
     payload("SessionStart", "outside_tmux"), {
@@ -399,6 +420,15 @@ do
   check("gather: quoted path survives", command:find("Claude", 1, true) ~= nil)
   check("gather: rename owner rides with pane data",
     command:find("#{@agent_name_session}", 1, true) ~= nil)
+  -- The trailing slash is the pane's current path. Without it the probe also
+  -- matches an agent someone renamed to "codex", and the expensive branch then
+  -- runs on every tick for the life of the server.
+  check("gather: the Codex probe only matches the command field",
+    command:find("${tab}codex${tab}/", 1, true) ~= nil)
+  -- One spelling of -perm, because GNU find rejects the BSD `+077` outright.
+  equals("gather: one portable permission filter",
+    select(2, command:gsub("%-perm /077", "")), 1)
+  check("gather: no unportable permission filter", not command:find("-perm +077", 1, true))
 end
 
 -- Codex currently defers SessionStart until the first prompt on some CLI
@@ -429,6 +459,25 @@ do
 
   local unrelated = blank:gsub("\t\t\tcodex\t", "\t\t\tzsh\t")
   equals("Codex provisional: non-Codex pane excluded", #agents.parse(unrelated), 0)
+
+  -- `ps -o comm=` prints a whole executable path on macOS, and a fifth of them
+  -- have spaces in it. Anchoring the tail of the line as one more field dropped
+  -- every one of those pids out of the ancestry table.
+  local spaced = table.concat({
+    "#panes",
+    "68612 %21 5 0 work\t\t\tcodex\t/Users/u/new-project",
+    "#procs",
+    "68612 2462 S+ /Applications/My Terminal.app/Contents/MacOS/zsh",
+    "75645 68612 S+ /Users/u/Application Support/bin/codex",
+  }, "\n")
+  local spaced_list = agents.parse(spaced)
+  local spaced_first = spaced_list[1] or {}
+  equals("spaced comm: a Codex installed under a path with spaces is found",
+    #spaced_list, 1)
+  equals("spaced comm: ancestry survives a shell with spaces in its path",
+    spaced_first.pane, "%21")
+  equals("spaced comm: it is still the Codex process that was matched",
+    spaced_first.pid, 75645)
 
   local hook_section = table.concat({
     "#codex_sessions",

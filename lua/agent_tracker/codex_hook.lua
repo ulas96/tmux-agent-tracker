@@ -74,7 +74,12 @@ function M.secure_dir(path)
     "[ -O " .. q .. " ]",
     "[ ! -L " .. q .. " ]",
     "chmod 700 " .. q,
-    "mode=$(stat -f %Lp " .. q .. " 2>/dev/null || stat -c %a " .. q .. " 2>/dev/null)",
+    -- GNU/busybox `stat -f` is --file-system: it rejects %Lp but prints a
+    -- filesystem dump to stdout *before* failing, which would then be compared
+    -- against 700. The BSD form has to lose second, because it is the one whose
+    -- failure is quiet. One substitution, not `mode=$(a) || mode=$(b)`: && and
+    -- || are left-associative and that shape lets the chain skip this check.
+    "mode=$(stat -c %a " .. q .. " 2>/dev/null || stat -f %Lp " .. q .. " 2>/dev/null)",
     "[ \"$mode\" = 700 ]",
   }, " && "))
 end
@@ -170,6 +175,42 @@ local function target_path(dir, session_id)
   return dir .. "/" .. session_id .. ".json"
 end
 
+local function read_bounded(path, limit)
+  local file = io.open(path, "rb")
+  if not file then return nil end
+  local data = file:read(limit + 1) or ""
+  file:close()
+  if #data > limit then return nil end
+  return data
+end
+
+-- Reading the pid back out of this session's own record. The alternative is
+-- M.discover_pid, which is a full process table with arguments — and PreToolUse
+-- and PostToolUse fire twice per tool call, inside the turn the user is waiting
+-- on. Within a session the pid behind a session id cannot move. SessionStart
+-- never takes this path: a resumed session keeps its id but gets a new process,
+-- and SessionStart is the event that resume fires.
+local function recorded_pid(dir, session_id)
+  local data = read_bounded(target_path(dir, session_id), codex.MAX_RECORD_BYTES)
+  local record = data and json.decode(data)
+  if type(record) ~= "table"
+      or record.schema ~= 1
+      or record.session_id ~= session_id
+      or type(record.pid) ~= "number" then
+    return nil
+  end
+  return record.pid
+end
+
+-- A Codex that crashes never sends SessionEnd, so its record would sit here for
+-- the life of the machine; past MAX_RECORDS of them the collector's `head` can
+-- start cutting off live sessions instead. Swept on SessionStart alone — the
+-- rare event, and the one that creates the file in the first place.
+local function sweep(dir)
+  command_ok("find " .. tmux.quote(dir)
+    .. " -maxdepth 1 -type f -name '*.json' -mtime +7 -delete")
+end
+
 local function is_symlink(path)
   return command_ok("[ -L " .. tmux.quote(path) .. " ]")
 end
@@ -234,7 +275,12 @@ function M.handle(input, env, dependencies)
     if transition.remove then return M.remove_record(dir, payload.session_id) end
 
     local deps = dependencies or {}
-    local pid = deps.pid or M.discover_pid(env, deps.process_text)
+    local start = payload.hook_event_name == "SessionStart"
+    if start then sweep(dir) end
+
+    local pid = deps.pid
+      or (not start and recorded_pid(dir, payload.session_id))
+      or M.discover_pid(env, deps.process_text)
     if type(pid) ~= "number" or pid <= 1 or pid % 1 ~= 0 then return true end
     local now = deps.now or os.time()
     return M.write_record(dir, M.record(payload, pid, pane, now), env)
@@ -282,15 +328,6 @@ function M.config_json(handler, state_dir)
   local value, err = M.config_table(handler, state_dir)
   if not value then return nil, err end
   return json.encode(value)
-end
-
-local function read_bounded(path, limit)
-  local file = io.open(path, "rb")
-  if not file then return nil end
-  local data = file:read(limit + 1) or ""
-  file:close()
-  if #data > limit then return nil end
-  return data
 end
 
 -- Privacy-safe readiness check: look only for the exact installed handler

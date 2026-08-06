@@ -87,13 +87,15 @@ function M.gather(overrides)
     "case ,\"$providers\", in *,claude,*) claude_on=1 ;; esac",
     "case ,\"$providers\", in *,codex,*) codex_on=1 ;; esac",
 
-    "codex_security=disabled; codex_stat=none",
+    -- GNU/busybox `stat -f` means --file-system: it rejects %Lp but writes a
+    -- filesystem dump to stdout before failing, so the BSD form has to be the
+    -- fallback rather than the first try. Its own failure is quiet.
+    "codex_security=disabled",
     "if [ \"$codex_on\" = 1 ]; then "
       .. "codex_security=absent; "
       .. "if [ -L \"$codex_dir\" ]; then codex_security=insecure; "
       .. "elif [ -d \"$codex_dir\" ]; then "
-      .. "mode=$(stat -f %Lp \"$codex_dir\" 2>/dev/null) && codex_stat=bsd; "
-      .. "if [ \"$codex_stat\" = none ]; then mode=$(stat -c %a \"$codex_dir\" 2>/dev/null) && codex_stat=gnu; fi; "
+      .. "mode=$(stat -c %a \"$codex_dir\" 2>/dev/null || stat -f %Lp \"$codex_dir\" 2>/dev/null); "
       .. "if [ -O \"$codex_dir\" ] && [ \"$mode\" = 700 ]; then codex_security=secure; "
       .. "else codex_security=insecure; fi; "
       .. "elif [ -e \"$codex_dir\" ]; then codex_security=insecure; fi; fi",
@@ -121,17 +123,14 @@ function M.gather(overrides)
       .. "| xargs awk " .. tmux.quote(claude_awk) .. " 2>/dev/null); fi",
     "printf '#claude_sessions\\n%s\\n' \"$claude_data\"",
 
+    -- `-perm /077` ("any of these bits") is the one spelling BSD, GNU and
+    -- busybox find all understand; GNU rejects the older `+077` outright.
     "codex_data=",
     "if [ \"$codex_security\" = secure ]; then "
-      .. "if [ \"$codex_stat\" = bsd ]; then "
       .. "codex_data=$(cd \"$codex_dir\" && "
-      .. "find . -maxdepth 1 -type f -links 1 -user \"$uid\" ! -perm +077 -name '*.json' -print 2>/dev/null "
-      .. "| LC_ALL=C grep -E '^\\./[A-Za-z0-9_-]+\\.json$' | head -n " .. MAX_RECORDS .. " "
-      .. "| xargs awk " .. tmux.quote(codex_awk) .. " 2>/dev/null); "
-      .. "else codex_data=$(cd \"$codex_dir\" && "
       .. "find . -maxdepth 1 -type f -links 1 -user \"$uid\" ! -perm /077 -name '*.json' -print 2>/dev/null "
       .. "| LC_ALL=C grep -E '^\\./[A-Za-z0-9_-]+\\.json$' | head -n " .. MAX_RECORDS .. " "
-      .. "| xargs awk " .. tmux.quote(codex_awk) .. " 2>/dev/null); fi; fi",
+      .. "| xargs awk " .. tmux.quote(codex_awk) .. " 2>/dev/null); fi",
     "printf '#codex_sessions\\n%s\\n' \"$codex_data\"",
 
     "printf '#procs\\n'",
@@ -143,9 +142,13 @@ function M.gather(overrides)
       .. "| sed -n -e 's/^\\([0-9][0-9]*\\)\\t.*/\\1/p' "
       .. "-e 's/^[^\\t]*\\t.*\"pid\":[ ]*\\([0-9][0-9]*\\).*/\\1/p' "
       .. "| head -n " .. (MAX_RECORDS * 2) .. " | tr '\\n' ',')",
+    -- The trailing slash is what pins this to the command field: it is followed
+    -- by the pane's absolute current path, where a custom agent name of "codex"
+    -- is followed by its owner key. Without it, renaming an agent to "codex"
+    -- puts the expensive full-table branch on every tick for good.
     "tab=$(printf '\\t'); codex_probe=0",
     "if [ \"$codex_on\" = 1 ]; then case \"$pane_data\" in "
-      .. "*\"${tab}codex${tab}\"*) codex_probe=1 ;; esac; fi",
+      .. "*\"${tab}codex${tab}/\"*) codex_probe=1 ;; esac; fi",
     "if [ \"$codex_probe\" = 1 ]; then "
       .. "ps -eo pid=,ppid=,stat=,comm= 2>/dev/null; "
       .. "else ps -o pid=,ppid= -p \"${pids}$$\" 2>/dev/null; fi",
@@ -237,16 +240,19 @@ local function parse_panes(lines)
   return by_pid
 end
 
+-- Only the two numbers are anchored. `comm` is a whole executable path on macOS
+-- and a fifth of them contain spaces (`/Library/Application Support/...`), so
+-- anchoring the tail as one more %S+ dropped those pids from the ancestry table
+-- altogether and broke every walk that crossed one.
 local function parse_procs(lines)
   local parent, detail = {}, {}
   for _, line in ipairs(lines) do
-    local pid, ppid, state, comm =
-      line:match("^%s*(%d+)%s+(%d+)%s+(%S+)%s+(%S+)%s*$")
-    if not pid then pid, ppid = line:match("^%s*(%d+)%s+(%d+)%s*$") end
+    local pid, ppid, rest = line:match("^%s*(%d+)%s+(%d+)%s*(.*)$")
     if pid then
       pid, ppid = tonumber(pid), tonumber(ppid)
       parent[pid] = ppid
-      if state and comm then detail[pid] = { state = state, comm = comm } end
+      local state, comm = rest:match("^(%S+)%s+(.-)%s*$")
+      if state and comm ~= "" then detail[pid] = { state = state, comm = comm } end
     end
   end
   return parent, detail

@@ -9,4 +9,7 @@ AGENT_TRACKER_UID=$(id -u)
 export AGENT_TRACKER_HOOK_PID AGENT_TRACKER_UID
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-exec "$root/bin/tmux-agent-tracker" codex-hook
+# Silent whether it works or not. Without this, a machine with no lua prints
+# "no lua interpreter found" on every lifecycle event, and hook output is one of
+# the few things that can reach Codex's own UI.
+exec "$root/bin/tmux-agent-tracker" codex-hook >/dev/null 2>&1

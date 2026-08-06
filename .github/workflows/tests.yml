@@ -7,18 +7,35 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    # The collector branches on which userland it is talking to — BSD stat and
+    # find answer differently from GNU and busybox — so one platform is not a
+    # test of it. A Linux-only matrix already let through a change in which the
+    # Codex bridge could not write a single record on Linux.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-      - name: Install Lua interpreters
+      - name: Install Lua interpreters (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y lua5.1 lua5.2 lua5.3 lua5.4 luajit
+      - name: Install Lua interpreters (macOS)
+        if: runner.os == 'macOS'
+        run: brew install lua luajit
       - name: Check entry points
         run: |
           bash -n agent-tracker.tmux
           sh -n bin/tmux-agent-tracker
-      - name: Test every supported interpreter available on Ubuntu
+          sh -n bin/tmux-agent-tracker-codex-hook
+      - name: Test every supported interpreter available on this runner
         run: |
-          for lua in lua5.1 lua5.2 lua5.3 lua5.4 luajit; do
+          ran=0
+          for lua in lua lua5.1 lua5.2 lua5.3 lua5.4 luajit; do
+            command -v "$lua" >/dev/null 2>&1 || continue
             echo "== $lua"
             "$lua" tests/run.lua
+            ran=$((ran + 1))
           done
+          [ "$ran" -gt 0 ] || { echo "no lua interpreter was tested"; exit 1; }
