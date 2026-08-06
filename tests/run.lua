@@ -261,6 +261,27 @@ do
     custom_config.hooks.Stop[1].hooks[1].command:find(
       "AGENT_TRACKER_CODEX_STATE_DIR='/tmp/private state'", 1, true
     ) ~= nil)
+
+  local bridge, notice = codex_hook.readiness(true, { records = 0, discovered = 2 })
+  equals("hook readiness: configured provisional bridge", bridge, "configured")
+  check("hook readiness: configured provisional notice",
+    notice and notice:find("review/trust", 1, true) ~= nil)
+
+  bridge, notice = codex_hook.readiness(true, { records = 1, valid = 1, discovered = 0 })
+  equals("hook readiness: valid bridge", bridge, "configured")
+  check("hook readiness: valid state needs no notice", notice == nil)
+
+  bridge, notice = codex_hook.readiness(true, { records = 0, discovered = 0 })
+  equals("hook readiness: configured without live agent", bridge, "configured")
+  check("hook readiness: no live agent needs no notice", notice == nil)
+
+  bridge, notice = codex_hook.readiness(false, { records = 1, discovered = 0 })
+  equals("hook readiness: records without config", bridge, "state present")
+  check("hook readiness: state present needs no notice", notice == nil)
+
+  bridge, notice = codex_hook.readiness(false, { records = 0, discovered = 0 })
+  equals("hook readiness: absent bridge", bridge, "not detected")
+  check("hook readiness: absent bridge without agent needs no notice", notice == nil)
 end
 
 -- Exercise the real atomic file boundary in a throwaway directory. This stays
@@ -425,10 +446,16 @@ do
   -- runs on every tick for the life of the server.
   check("gather: the Codex probe only matches the command field",
     command:find("${tab}codex${tab}/", 1, true) ~= nil)
-  -- One spelling of -perm, because GNU find rejects the BSD `+077` outright.
-  equals("gather: one portable permission filter",
-    select(2, command:gsub("%-perm /077", "")), 1)
-  check("gather: no unportable permission filter", not command:find("-perm +077", 1, true))
+  -- BSD rejects GNU's `/077` and GNU rejects BSD's `+077`. Six POSIX single-bit
+  -- predicates reject any group/other access without adding a per-file stat.
+  for _, bit in ipairs({ "001", "002", "004", "010", "020", "040" }) do
+    equals("gather: portable private-file bit " .. bit,
+      select(2, command:gsub("%-perm %-" .. bit, "")), 1)
+  end
+  check("gather: no GNU-only permission filter",
+    not command:find("-perm /077", 1, true))
+  check("gather: no BSD-only permission filter",
+    not command:find("-perm +077", 1, true))
 end
 
 -- Codex currently defers SessionStart until the first prompt on some CLI

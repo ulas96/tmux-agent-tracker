@@ -330,6 +330,33 @@ function M.config_json(handler, state_dir)
   return json.encode(value)
 end
 
+-- Configuration only proves that Codex can discover the handler. A live
+-- process with no records is still provisional: it may not have submitted its
+-- first prompt or its hook may not be installed and trusted. Keep this
+-- classification pure so doctor can explain that state without reading hook
+-- payloads or Codex's private trust store.
+function M.readiness(configured, stats)
+  stats = stats or {}
+  local records = tonumber(stats.records) or 0
+  local discovered = tonumber(stats.discovered) or 0
+
+  local bridge
+  if configured then
+    bridge = "configured"
+  elseif records > 0 then
+    bridge = "state present"
+  else
+    bridge = "not detected"
+  end
+
+  local notice
+  if records == 0 and discovered > 0 then
+    notice = "live Codex is provisional only; after the first prompt, "
+      .. "install the hook config or review/trust it in /hooks if it stays gray"
+  end
+  return bridge, notice
+end
+
 -- Privacy-safe readiness check: look only for the exact installed handler
 -- string in bounded config files and never print or return their contents.
 function M.configured(handler, env)

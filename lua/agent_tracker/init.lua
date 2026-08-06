@@ -335,14 +335,8 @@ function commands.doctor()
   local codex_source = sources.codex or { path = config.codex_state_dir() or "", status = "absent" }
   local cstats = meta.sources.codex
 
-  local bridge
-  if codex_hook.configured(hook_script()) then
-    bridge = "configured"
-  elseif cstats.records > 0 then
-    bridge = "state present"
-  else
-    bridge = "not detected"
-  end
+  local bridge, codex_notice = codex_hook.readiness(
+    codex_hook.configured(hook_script()), cstats)
 
   print("lua             " .. _VERSION)
   print("tmux            " .. (tmux.query("-V"):gsub("%s+$", "")))
@@ -354,6 +348,7 @@ function commands.doctor()
     .. " (" .. cstats.valid .. " valid, " .. cstats.invalid .. " invalid, "
     .. cstats.stale .. " stale, " .. (cstats.discovered or 0)
     .. " live provisional; " .. codex_source.status .. ")")
+  if codex_notice then print("codex notice    " .. codex_notice) end
   print("agents found    " .. #list .. " (claude " .. (meta.providers.claude or 0)
     .. ", codex " .. (meta.providers.codex or 0) .. ")")
   for _, agent in ipairs(list) do

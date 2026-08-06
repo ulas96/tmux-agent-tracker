@@ -17,6 +17,10 @@ local M = {}
 local MAX_ANCESTRY_HOPS = 32
 local MAX_RECORDS = 256
 local MAX_CLAUDE_RECORD_BYTES = 65536
+local PRIVATE_FILE_FILTER = table.concat({
+  "! -perm -001", "! -perm -002", "! -perm -004",
+  "! -perm -010", "! -perm -020", "! -perm -040",
+}, " ")
 
 local function setting(value, fallback)
   if value == nil or value == "" then return fallback end
@@ -123,12 +127,14 @@ function M.gather(overrides)
       .. "| xargs awk " .. tmux.quote(claude_awk) .. " 2>/dev/null); fi",
     "printf '#claude_sessions\\n%s\\n' \"$claude_data\"",
 
-    -- `-perm /077` ("any of these bits") is the one spelling BSD, GNU and
-    -- busybox find all understand; GNU rejects the older `+077` outright.
+    -- BSD find rejects GNU's `-perm /077`, while GNU rejects BSD's `+077`.
+    -- POSIX `-perm -bit` tests one required bit, so negating each group/other
+    -- bit separately expresses "none are set" without a per-record stat loop.
     "codex_data=",
     "if [ \"$codex_security\" = secure ]; then "
       .. "codex_data=$(cd \"$codex_dir\" && "
-      .. "find . -maxdepth 1 -type f -links 1 -user \"$uid\" ! -perm /077 -name '*.json' -print 2>/dev/null "
+      .. "find . -maxdepth 1 -type f -links 1 -user \"$uid\" "
+      .. PRIVATE_FILE_FILTER .. " -name '*.json' -print 2>/dev/null "
       .. "| LC_ALL=C grep -E '^\\./[A-Za-z0-9_-]+\\.json$' | head -n " .. MAX_RECORDS .. " "
       .. "| xargs awk " .. tmux.quote(codex_awk) .. " 2>/dev/null); fi",
     "printf '#codex_sessions\\n%s\\n' \"$codex_data\"",

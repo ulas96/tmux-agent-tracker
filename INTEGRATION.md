@@ -273,7 +273,7 @@ tmux            tmux 3.5a
 providers       claude,codex
 claude source   /home/you/.claude/sessions (2 records)
 codex bridge    configured
-codex state     /run/user/1000/tmux-agent-tracker-1000/codex (1 valid, 0 invalid, 0 stale; secure)
+codex state     /run/user/1000/tmux-agent-tracker-1000/codex (1 valid, 0 invalid, 0 stale, 0 live provisional; secure)
 agents found    3 (claude 2, codex 1)
   [claude] 1 ✳ᶜ  work:1.2  fix-the-login-bug
   [codex] 2 ✳ᵠ  work:2.0  codex (approval)
@@ -583,15 +583,19 @@ In order of likelihood:
 
 Run `doctor`, then check these in order:
 
-1. `codex bridge not detected`: install/merge the printed config, restart Codex,
+1. `codex bridge not detected`: install/merge the printed config, start Codex,
    and trust the exact definition in `/hooks`.
-2. No state records: the Codex CLI must be interactive and running inside tmux;
-   detached `codex exec`, cloud, app and IDE sessions are not supported surfaces.
-3. `insecure`: remove symlinks and restore the state directory to mode `0700`
+2. `configured` with zero valid records and a non-zero `live provisional` count:
+   a blank TUI is expected before its first prompt. If it stays gray after a
+   prompt, review/trust the exact definition in `/hooks`.
+3. No state records and no provisional process: the Codex CLI must be
+   interactive and running inside tmux; detached `codex exec`, cloud, app and
+   IDE sessions are not supported surfaces.
+4. `insecure`: remove symlinks and restore the state directory to mode `0700`
    and files to `0600`; insecure records are skipped.
-4. `stale`: the recorded PID exited, its ancestry no longer reaches the pane,
+5. `stale`: the recorded PID exited, its ancestry no longer reaches the pane,
    or the pane id was reused. This is rejected deliberately, not an mtime delay.
-5. `invalid`: a partial/oversized/future-schema record was skipped. A later hook
+6. `invalid`: a partial/oversized/future-schema record was skipped. A later hook
    normally replaces it atomically; restart the Codex turn if it persists.
 
 If hooks were merged more than once, `/hooks` may show duplicate tracker

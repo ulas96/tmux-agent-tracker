@@ -381,9 +381,10 @@ The defaults are Catppuccin Mocha, so it drops in without further colour work.
 
 prints provider readiness, secure-source counts, and every live pane-backed
 agent it can see. For Claude, an empty list usually means it is outside tmux or
-the sessions directory moved. For Codex, `live provisional` confirms a blank TUI
-was found before its first hook; otherwise check `/hooks` trust, that the CLI is
-inside tmux, and that `codex state` is not reported as insecure.
+the sessions directory moved. For Codex, `live provisional` confirms a TUI was
+found before its first hook. A blank TUI is expected to begin that way; if it
+stays gray after the first prompt, install/review/trust the exact definition in
+`/hooks` and check that `codex state` is not reported as insecure.
 
 No second status line at all usually means a theme loaded after this plugin and
 set `status` back to `on`. Load this plugin last.
