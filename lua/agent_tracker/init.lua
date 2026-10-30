@@ -296,6 +296,37 @@ commands["rename-to"] = function(name)
   if agent then refresh_status() end
 end
 
+-- One kill-pane per agent on the bar, batched into a single tmux call. Killing
+-- the pane rather than signalling the CLI is what takes the agent off the bar
+-- on the next tick with nothing left behind to clean up.
+function M.kill_commands(list)
+  local out = {}
+  for _, agent in ipairs(list) do
+    out[#out + 1] = "kill-pane -t " .. tmux.quote(agent.pane)
+  end
+  return out
+end
+
+-- Two hops, like rename: `close-all` asks, `kill-all` acts. The roster is read
+-- again after the answer, so it closes what is on the bar when you say y, not
+-- what was there when the prompt opened.
+commands["close-all"] = function()
+  local list = load()
+  if #list == 0 then
+    tmux.tmux("display-message " .. tmux.quote("no tracked agents running"))
+    return
+  end
+  tmux.tmux(table.concat({
+    "confirm-before",
+    "-p " .. tmux.quote("close all " .. #list .. " agents? (y/n)"),
+    tmux.quote("run-shell -b " .. tmux.quote(nav.script() .. " kill-all")),
+  }, " "))
+end
+
+commands["kill-all"] = function()
+  tmux.batch(M.kill_commands(load()))
+end
+
 -- Put a bar pane on every window that is missing one, or has had one shoved out
 -- of place by a layout change. Safe to call repeatedly; the layout hook does.
 function commands.ensure()

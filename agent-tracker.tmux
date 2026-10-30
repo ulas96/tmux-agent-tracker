@@ -186,6 +186,9 @@ if enabled keys on; then
   # Not backgrounded: both of these open a prompt or a menu, which needs the
   # client run-shell is attached to.
   tmux bind-key -T agent r run-shell "$tracker rename"
+  # Asks y/n before it kills every agent pane on the bar. Next-waiting lives on
+  # prefix + Q, so q is free for the one key here you never want to hit by habit.
+  tmux bind-key -T agent q run-shell "$tracker close-all"
 
   # The separator has to reach tmux as the literal two characters \; — a bare
   # `;` would be eaten by tmux's own parser as the end of the bind-key command,
@@ -193,7 +196,6 @@ if enabled keys on; then
   sep='\;'
   tmux bind-key -T agent n $run "$tracker next" "$sep" $stay
   tmux bind-key -T agent p $run "$tracker prev" "$sep" $stay
-  tmux bind-key -T agent q $run "$tracker waiting" "$sep" $stay
   tmux bind-key -T agent c $run "$tracker complete" "$sep" $stay
   tmux bind-key -T agent Tab $run "$tracker last" "$sep" $stay
   tmux bind-key -T agent R $run "$tracker refresh" "$sep" $stay

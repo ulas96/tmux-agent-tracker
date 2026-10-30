@@ -225,7 +225,8 @@ Ghostty `macos-option-as-alt = left`; iTerm2 → Profiles → Keys → Left Opti
 |---|---|---|
 | `1`–`9` | jump to that agent | exits |
 | `n` / `p` | next / previous | stays |
-| `q` / `c` | next waiting / next finished | stays |
+| `c` | next finished | stays |
+| `q` | close every agent on the bar, after a y/n | exits |
 | `w` / `z` | go to selected / go and zoom | exits |
 | `l` | pick from a menu | exits |
 | `Tab` | last agent | stays |

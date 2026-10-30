@@ -877,6 +877,15 @@ do
     template:find("rename-to'", 1, true) ~= nil)
 end
 
+-- Close-all kills exactly the panes on the bar, one batched command each.
+do
+  local tracker = require("agent_tracker.init")
+  local cmds = tracker.kill_commands({ { pane = "%3" }, { pane = "%7" } })
+  equals("close-all: one kill per agent", #cmds, 2)
+  equals("close-all: targets the agent's pane", cmds[2], "kill-pane -t '%7'")
+  equals("close-all: nothing on the bar, nothing killed", #tracker.kill_commands({}), 0)
+end
+
 -- --- navigation -------------------------------------------------------------
 
 -- nav reads the selection from tmux; stub that out so the maths is testable.
